@@ -146,7 +146,7 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Type /help for assistance.")
 
 # -----------------------
-# Run Bot (Render-safe)
+# Main: Render-safe startup
 # -----------------------
 if __name__ == "__main__":
     import asyncio
@@ -169,23 +169,23 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-    # Scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(reset_pairing_if_needed, CronTrigger(hour=0, minute=0))
-    scheduler.start()
-
-    # ---- Start bot without closing the loop ----
     async def start_bot():
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
         logger.info("🚀 Bot running...")
 
+        # Scheduler inside running loop
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(reset_pairing_if_needed, CronTrigger(hour=0, minute=0))
+        scheduler.start()
+        logger.info("✅ Scheduler started.")
+
     loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(start_bot())
         loop.run_forever()
     except RuntimeError:
-        # fallback for pre-running loop on Render
+        # fallback if loop already running (Render)
         asyncio.ensure_future(start_bot())
         loop.run_forever()
