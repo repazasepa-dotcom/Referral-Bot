@@ -90,7 +90,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "right": 0,
             "referrals": [],
             "paid": False,
-            "txid": None
+            "txid": None,
+            "proof_screenshot": None
         }
 
         if context.args:
@@ -121,7 +122,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # -----------------------
-# TXID submission
+# Pay command (TXID or screenshot)
 # -----------------------
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -135,15 +136,13 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ You are already confirmed as paid.")
         return
 
-    if not context.args or len(context.args) != 1:
-        await update.message.reply_text("Usage: /pay <transaction_id>")
-        return
+    # Case 1: TXID as argument
+    if context.args and len(context.args) == 1:
+        txid = context.args[0]
+        user["txid"] = txid
+        user.pop("proof_screenshot", None)
+        save_data()
 
-    txid = context.args[0]
-    user["txid"] = txid
-    save_data()
-
-    try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
@@ -152,15 +151,45 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"TXID: {txid}"
             )
         )
-    except Exception as e:
-        logger.error(f"Failed to notify admin: {e}")
 
+        await update.message.reply_text(
+            "✅ TXID submitted successfully. Admin will verify your payment soon."
+        )
+        return
+
+    # Case 2: Screenshot as photo
+    if update.message.photo:
+        photo_file = await update.message.photo[-1].get_file()
+        file_path = f"proof_{user_id}_{int(datetime.utcnow().timestamp())}.jpg"
+        await photo_file.download_to_drive(file_path)
+
+        user["proof_screenshot"] = file_path
+        user.pop("txid", None)
+        save_data()
+
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"💳 New payment screenshot submitted!\n"
+                f"User ID: {user_id}\n"
+                f"Screenshot saved as: {file_path}"
+            )
+        )
+
+        await update.message.reply_text(
+            "✅ Screenshot submitted successfully. Admin will verify your payment soon."
+        )
+        return
+
+    # If neither TXID nor screenshot
     await update.message.reply_text(
-        f"✅ TXID submitted successfully. Admin will verify your payment soon."
+        "Usage:\n"
+        "/pay <TXID> - Submit transaction ID\n"
+        "Or send /pay with a screenshot of your payment as an image."
     )
 
 # -----------------------
-# Admin confirms payment
+# Confirm command (admin)
 # -----------------------
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -174,28 +203,30 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_user_id = context.args[0]
     user = users.get(target_user_id)
     if not user:
-        await update.message.reply_text("User not found.")
+        await update.message.reply_text("❌ User not found.")
         return
 
     if user.get("paid"):
-        await update.message.reply_text("User is already marked as paid.")
+        await update.message.reply_text("✅ User is already marked as paid.")
         return
 
     txid = user.get("txid")
-    if not txid:
-        await update.message.reply_text("❌ User has not submitted a TXID yet.")
+    proof_screenshot = user.get("proof_screenshot")
+
+    if not txid and not proof_screenshot:
+        await update.message.reply_text("❌ User has not submitted TXID or screenshot yet.")
         return
 
+    # Mark user as paid
     user["paid"] = True
     save_data()
 
-    # Always credit referrer bonuses even if referrer hasn't paid
+    # Credit referrer bonuses
     ref_id = user.get("referrer")
     if ref_id:
         users[ref_id]["balance"] += DIRECT_BONUS
         users[ref_id]["earned_from_referrals"] += DIRECT_BONUS
 
-        # Pairing bonus logic
         if users[ref_id]["left"] <= users[ref_id]["right"]:
             side = "left"
         else:
@@ -208,14 +239,34 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_data()
 
+    details_text = ""
+    if txid:
+        details_text += f"TXID: {txid}\n"
+    if proof_screenshot:
+        details_text += f"Screenshot: {proof_screenshot}\n"
+
     await update.message.reply_text(
-        f"✅ User {target_user_id} confirmed as paid.\nTXID: {txid}\n"
+        f"✅ User {target_user_id} confirmed as paid.\n"
+        f"{details_text}"
         f"Bonuses credited to referrer.\n\n"
         f"Here is your premium signals channel link:\n{PREMIUM_GROUP}"
     )
 
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_user_id),
+            text=(
+                "✅ Your payment has been confirmed!\n"
+                f"{details_text}"
+                "You now have access to the premium signals channel.\n"
+                f"{PREMIUM_GROUP}"
+            )
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify user {target_user_id}: {e}")
+
 # -----------------------
-# User stats & balance
+# Balance, stats, withdraw, processwithdraw (unchanged)
 # -----------------------
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_pairing_if_needed()
@@ -255,9 +306,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# -----------------------
-# Withdraw & process
-# -----------------------
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
@@ -280,7 +328,6 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     wallet_address = context.args[0]
 
-    # Save pending withdrawal
     user["pending_withdraw"] = {
         "amount": balance_amount,
         "wallet": wallet_address,
@@ -355,6 +402,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 /stats - View your referral stats\n"
         "🏦 /withdraw <BEP20_wallet> - Request withdrawal (min 20 USDT)\n"
         "💳 /pay <TXID> - Submit your payment transaction ID\n"
+        "💳 /pay + screenshot - Or send /pay with a screenshot image as proof of payment\n"
         "❓ /help - Show this menu"
     )
 
