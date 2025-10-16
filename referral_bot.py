@@ -2,6 +2,7 @@
 import json
 import os
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, BotCommand
 from telegram.ext import (
@@ -12,7 +13,7 @@ from telegram.ext import (
     filters
 )
 
-# Optional: APScheduler for auto daily ROI (install if desired)
+# Optional scheduler (install apscheduler if you want automatic daily ROI)
 try:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
     APSCHEDULER_AVAILABLE = True
@@ -28,27 +29,26 @@ logging.basicConfig(
 )
 
 # -----------------------
-# Configuration (update if needed)
+# Configuration
 # -----------------------
 DATA_FILE = "data.json"
-ADMIN_ID = 6122146243  # <-- replace with your Telegram numeric ID if different
-BOT_DISPLAY_NAME = "Premium Member Auto Trading Bot"
+ADMIN_ID = 6122146243  # admin Telegram numeric id
+BOT_DISPLAY_NAME = "Premium Membership Bot"
 
-DIRECT_BONUS = 20.0
-PAIRING_BONUS = 5.0
+DIRECT_BONUS = 20.0       # USDT per direct referral
+PAIRING_BONUS = 5.0       # USDT per pair
 MAX_PAIRINGS_PER_DAY = 10
-MIN_INVEST = 50.0
-MIN_WITHDRAW = 20.0
+MIN_INVEST = 50.0         # USDT
+MIN_WITHDRAW = 20.0       # USDT
 
-# Your BNB Smart Chain wallet (monospaced where shown)
 INVEST_WALLET = "0xC6219FFBA27247937A63963E4779e33F7930d497"
 PREMIUM_GROUP = "https://t.me/+ra4eSwIYWukwMjRl"
 
 INVESTMENT_LOCK_DAYS = 30
-DAILY_ROI_PERCENT = 0.01  # 1% per day
+DAILY_ROI_PERCENT = 0.01  # 1% daily ROI
 
 # -----------------------
-# Helpers: load/save data
+# Helpers
 # -----------------------
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -69,13 +69,8 @@ def ensure_user_structure(data, user_id, user_fullname):
             "referrals": [],
             "total_invest": 0.0,
             "credited_for_referrer": False,
-
-            # withdrawable: referral bonuses + accumulated ROI
-            "balance": 0.0,
-
-            # investments: list of {"amount": float, "ts": iso str}
-            "investments": [],
-
+            "balance": 0.0,  # withdrawable: referral bonuses + ROI
+            "investments": [],  # list of {"amount": float, "ts": iso str}
             "pending_invest": None,
             "pending_withdrawal": None,
             "withdrawals": [],
@@ -89,7 +84,7 @@ def is_admin(update: Update):
     return update.effective_user and update.effective_user.id == ADMIN_ID
 
 # -----------------------
-# User commands
+# User Commands
 # -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -97,7 +92,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = load_data()
     ensure_user_structure(data, uid, user.full_name)
 
-    # referral handling if provided
+    # handle referral param /start <ref_id>
     if context.args:
         ref_id = context.args[0]
         if ref_id != uid and ref_id in data:
@@ -114,7 +109,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Your referral link:\n{referral_link}\n\n"
         f"Use /invest <amount> to invest (min {MIN_INVEST} USDT).\n"
         f"Check /balance and /stats for details.\n"
-        f"See commands with /commands or /help.",
+        f"See quick list with /commands or detailed guide with /help.",
         parse_mode="Markdown"
     )
 
@@ -127,7 +122,10 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     referral_link = f"https://t.me/{context.bot.username}?start={uid}"
     total_refs = len(data[uid]["referrals"])
-    await update.message.reply_text(f"📢 Your referral link:\n{referral_link}\n\n👥 Total referrals: {total_refs}")
+    await update.message.reply_text(
+        f"📢 Your referral link:\n{referral_link}\n\n"
+        f"👥 Total referrals: {total_refs}"
+    )
 
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -151,17 +149,16 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data[uid]["pending_invest"] = {"amount": round(amount, 8), "ts": ts}
     save_data(data)
 
-    # show wallet in monospace for clarity
     await update.message.reply_text(
         f"📈 You are about to invest *{amount} USDT* (BEP20).\n\n"
         f"Send USDT to:\n`{INVEST_WALLET}`\n\n"
         f"Then reply with the TXID or upload a screenshot here.\n"
-        f"Admin will verify and approve your deposit.",
+        "Admin will verify and approve your deposit.",
         parse_mode="Markdown"
     )
 
 async def handle_invest_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # TXID text or screenshot for pending_invest
+    # Accept text (TXID) or photo (screenshot) for pending investment
     user = update.effective_user
     uid = str(user.id)
     data = load_data()
@@ -183,12 +180,13 @@ async def handle_invest_proof(update: Update, context: ContextTypes.DEFAULT_TYPE
     data[uid]["pending_invest"]["proof_type"] = proof_type
     save_data(data)
 
+    # notify admin
     await context.bot.send_message(
         ADMIN_ID,
-        f"📥 New investment pending:\n👤 {data[uid]['name']} ({uid})\n💰 {pending['amount']} USDT\n📝 Proof: {proof_type}\n"
+        f"📥 New investment pending:\n👤 {data[uid]['name']} (ID: {uid})\n💰 {pending['amount']} USDT\n📝 Proof type: {proof_type}\n"
         f"Approve: /approve_deposit {uid} {pending['amount']}"
     )
-    await update.message.reply_text("✅ Your proof has been sent to admin for verification.")
+    await update.message.reply_text("✅ Your proof has been sent to admin for review.")
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -197,8 +195,9 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in data:
         await update.message.reply_text("Please /start first.")
         return
+
     user_data = data[uid]
-    invest_total = sum(inv["amount"] for inv in user_data["investments"])
+    invest_total = sum(inv["amount"] for inv in user_data.get("investments", []))
     await update.message.reply_text(
         f"💵 *Your Balances:*\n\n"
         f"🏦 Investment (locked {INVESTMENT_LOCK_DAYS} days): {round(invest_total,8)} USDT\n"
@@ -213,12 +212,13 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in data:
         await update.message.reply_text("Please /start first.")
         return
+
     info = data[uid]
     total_refs = len(info["referrals"])
     total_direct = total_refs * DIRECT_BONUS
     total_pairs = (sum(1 for r in info["referrals"] if data.get(r, {}).get("credited_for_referrer", False)) // 2)
     pairing_bonus_total = total_pairs * PAIRING_BONUS
-    invest_total = sum(inv["amount"] for inv in info["investments"])
+    invest_total = sum(inv["amount"] for inv in info.get("investments", []))
     premium_status = "✅ Premium Member" if info.get("is_premium") else "❌ Not Premium"
 
     msg = (
@@ -253,9 +253,21 @@ async def joinpremium(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚀 Buy & sell targets provided\n"
         "🚀 2-5 daily signals\n"
         "🚀 Auto trading by bot\n\n"
-        "🚀 1-3 special daily premium signals (expected short-term pumps).\n\n"
+        "🚀 1-3 special daily premium signals (short-term opportunities).\n\n"
         f"Join here: `{PREMIUM_GROUP}`",
         parse_mode="Markdown"
+    )
+
+async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    uid = str(user.id)
+    data = load_data()
+    req = data.get(uid, {}).get("pending_withdrawal")
+    if not req:
+        await update.message.reply_text("✅ No pending withdrawals.")
+        return
+    await update.message.reply_text(
+        f"⏳ Pending withdrawal:\n💰 {req['amount']} USDT\n🏦 {req['wallet']}\nRequested at: {req['ts']}"
     )
 
 # -----------------------
@@ -268,7 +280,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user_structure(data, uid, user.full_name)
 
     if len(context.args) < 2:
-        await update.message.reply_text("Usage: /withdraw <wallet_address> <amount>")
+        await update.message.reply_text("Usage: /withdraw <wallet_address> <amount>\nExample: /withdraw 0x123abc 50")
         return
 
     wallet = context.args[0]
@@ -325,12 +337,12 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(
         ADMIN_ID,
-        f"📥 New withdrawal request\n👤 {user_data['name']} ({uid})\n💰 {round(amount,8)} USDT\n🏦 {wallet}\n"
+        f"📥 New withdrawal request\n👤 {user_data['name']} (ID: {uid})\n💰 {round(amount,8)} USDT\n🏦 {wallet}\n"
         f"Approve: /approve {uid} {round(amount,8)}\nReject: /reject {uid}"
     )
 
 # -----------------------
-# Admin commands (hidden)
+# Admin Commands (hidden)
 # -----------------------
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
@@ -342,14 +354,13 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/approve <uid> <amount> – Approve withdrawal\n"
         "/reject <uid> – Reject withdrawal\n"
         "/pending_requests – View pending withdrawals\n"
-        "/dailyroi – Credit 1% ROI to all users (run once/day)\n"
+        "/dailyroi – Credit 1% daily ROI to all users (run once/day)\n"
         "/economy – View economy summary",
         parse_mode="Markdown"
     )
 
 async def approve_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("Unknown command.")
         return
     if len(context.args) < 2:
         await update.message.reply_text("Usage: /approve_deposit <uid> <amount>")
@@ -365,10 +376,12 @@ async def approve_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid not in data:
         await update.message.reply_text("User not found.")
         return
+
     pending = data[uid].get("pending_invest")
     if not pending:
-        await update.message.reply_text("No pending investment.")
+        await update.message.reply_text("No pending investment for this user.")
         return
+
     if round(amount, 8) != round(pending["amount"], 8):
         await update.message.reply_text("Amount does not match pending investment.")
         return
@@ -405,7 +418,6 @@ async def approve_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("Unknown command.")
         return
     if len(context.args) < 2:
         return
@@ -414,6 +426,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(context.args[1])
     except ValueError:
         return
+
     data = load_data()
     if uid not in data:
         return
@@ -425,7 +438,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     remaining = amount
 
-    # deduct referral balance first
+    # referral balance first
     bal = data[uid].get("balance", 0.0)
     if bal >= remaining:
         data[uid]["balance"] = round(bal - remaining, 8)
@@ -434,7 +447,7 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
         remaining = round(remaining - bal, 8)
         data[uid]["balance"] = 0.0
 
-    # deduct unlocked investments oldest-first
+    # unlocked investments (oldest-first)
     if remaining > 0:
         now = datetime.utcnow()
         unlock_td = timedelta(days=INVESTMENT_LOCK_DAYS)
@@ -446,7 +459,6 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 inv_ts = now
             if now - inv_ts >= unlock_td:
                 unlocked_indices.append(i)
-        # deduct
         for idx in unlocked_indices:
             if remaining <= 0:
                 break
@@ -468,7 +480,6 @@ async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("Unknown command.")
         return
     if len(context.args) < 1:
         return
@@ -483,7 +494,6 @@ async def reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def pending_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
-        await update.message.reply_text("Unknown command.")
         return
     data = load_data()
     requests = []
@@ -559,7 +569,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_admin_user = (user_id == ADMIN_ID)
     msg = (
-        "💡 *Premium Member Auto Trading Bot — Command Guide*\n\n"
+        "💡 *Premium Membership Bot — Command Guide*\n\n"
         "*👤 User Commands*\n"
         "/start — Register and get your referral link\n"
         "/referral — View your referral link and total referrals\n"
@@ -573,7 +583,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if is_admin_user:
         msg += (
-            "\n⚙️ *Admin Only:*\n"
+            "\n⚙️ Admin Only:\n"
             "/approve_deposit <user_id> <amount>\n"
             "/approve <user_id> <amount>\n"
             "/reject <user_id>\n"
@@ -583,8 +593,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     msg += (
         "\n💰 *Earnings*\n"
-        "• 1% daily ROI credited to withdrawable balance\n"
-        "• 20 USDT per referral + 5 USDT per pair\n"
+        f"• {int(DAILY_ROI_PERCENT*100)}% daily ROI credited to withdrawable balance\n"
+        f"• {int(DIRECT_BONUS)} USDT per referral + {int(PAIRING_BONUS)} USDT per pair\n"
         f"• Investments locked {INVESTMENT_LOCK_DAYS} days before withdrawal"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -623,12 +633,12 @@ async def commands_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
-        logging.error("BOT_TOKEN missing.")
+        logging.error("BOT_TOKEN environment variable is missing.")
         return
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # user handlers
+    # User handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("referral", referral))
     app.add_handler(CommandHandler("invest", invest))
@@ -636,11 +646,12 @@ def main():
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("withdraw", withdraw))
+    app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("joinpremium", joinpremium))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("commands", commands_list))
 
-    # admin handlers (hidden)
+    # Admin handlers (hidden)
     app.add_handler(CommandHandler("admin", admin))
     app.add_handler(CommandHandler("approve_deposit", approve_deposit))
     app.add_handler(CommandHandler("approve", approve))
@@ -649,43 +660,44 @@ def main():
     app.add_handler(CommandHandler("dailyroi", dailyroi))
     app.add_handler(CommandHandler("economy", economy))
 
-    app.post_init = lambda _: (asyncio_set_user_commands(app))
+    # Post init: set user visible commands (admin commands hidden)
+    async def set_user_commands(appobj):
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("referral", "Show your referral link"),
+            BotCommand("invest", "Invest funds"),
+            BotCommand("balance", "Check your balances"),
+            BotCommand("stats", "Show detailed earnings"),
+            BotCommand("withdraw", "Request withdrawal"),
+            BotCommand("pending", "Check pending withdrawals"),
+            BotCommand("joinpremium", "Join premium group"),
+            BotCommand("help", "Detailed command guide"),
+            BotCommand("commands", "Quick command list")
+        ]
+        await appobj.bot.set_my_commands(commands)
 
-    # optional automatic daily ROI via APScheduler
+    app.post_init = lambda _: asyncio.create_task(set_user_commands(app))
+
+    # Optional: automatic daily ROI scheduler
     if APSCHEDULER_AVAILABLE:
         try:
             scheduler = AsyncIOScheduler()
-            # run every 24 hours (adjust cron/time as needed)
-            scheduler.add_job(lambda: app.create_task(_auto_dailyroi_job()), "interval", hours=24, next_run_time=datetime.utcnow())
+            # run _auto_dailyroi_job every 24 hours
+            scheduler.add_job(lambda: asyncio.create_task(_auto_dailyroi_job()), "interval", hours=24, next_run_time=datetime.utcnow())
             scheduler.start()
-            logging.info("Auto daily ROI scheduler started.")
+            logging.info("APSheduler started for auto daily ROI.")
         except Exception as e:
-            logging.warning(f"Scheduler failed: {e}")
+            logging.warning(f"Could not start APScheduler: {e}")
 
     print(f"✅ {BOT_DISPLAY_NAME} running...")
     app.run_polling()
 
-# set bot commands for users (hide admin commands)
-import asyncio
-async def asyncio_set_user_commands(app):
-    commands = [
-        BotCommand("start", "Start the bot"),
-        BotCommand("referral", "Show your referral link"),
-        BotCommand("invest", "Invest funds"),
-        BotCommand("balance", "Check your balances"),
-        BotCommand("stats", "Show detailed earnings"),
-        BotCommand("withdraw", "Request withdrawal"),
-        BotCommand("joinpremium", "Join premium group"),
-        BotCommand("help", "Detailed command guide"),
-        BotCommand("commands", "Quick command list")
-    ]
-    await app.bot.set_my_commands(commands)
-
-# helper for scheduler (auto dailyroi)
+# helper for scheduler
 async def _auto_dailyroi_job():
     data = load_data()
     today = datetime.utcnow().date()
     total_distributed = 0.0
+    credited_count = 0
     for uid, u in data.items():
         invest_sum = sum(inv["amount"] for inv in u.get("investments", []))
         if invest_sum <= 0:
@@ -704,8 +716,9 @@ async def _auto_dailyroi_job():
         u["balance"] = round(u.get("balance", 0.0) + roi, 8)
         u["last_roi_date"] = datetime.utcnow().isoformat()
         total_distributed += roi
+        credited_count += 1
     save_data(data)
-    logging.info(f"Auto daily ROI done: total distributed {total_distributed}")
+    logging.info(f"Auto daily ROI: users credited={credited_count}, total={total_distributed}")
 
 if __name__ == "__main__":
     main()
