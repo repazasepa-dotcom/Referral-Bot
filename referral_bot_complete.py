@@ -146,42 +146,46 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Type /help for assistance.")
 
 # -----------------------
-# Run Bot
+# Run Bot (Render-safe)
 # -----------------------
 if __name__ == "__main__":
     import asyncio
 
-    async def run_bot():
-        token = os.getenv("BOT_TOKEN")
-        if not token:
-            raise ValueError("BOT_TOKEN not set in environment variables!")
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise ValueError("BOT_TOKEN not set!")
 
-        app = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(token).build()
 
-        # Handlers
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("pay", pay))
-        app.add_handler(MessageHandler(filters.PHOTO, pay))
-        app.add_handler(CommandHandler("confirm", confirm))
-        app.add_handler(CommandHandler("balance", balance))
-        app.add_handler(CommandHandler("withdraw", withdraw))
-        app.add_handler(CommandHandler("processwithdraw", processwithdraw))
-        app.add_handler(CommandHandler("stats", stats))
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("pay", pay))
+    app.add_handler(MessageHandler(filters.PHOTO, pay))
+    app.add_handler(CommandHandler("confirm", confirm))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("withdraw", withdraw))
+    app.add_handler(CommandHandler("processwithdraw", processwithdraw))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-        # Daily reset scheduler
-        scheduler = AsyncIOScheduler()
-        scheduler.add_job(reset_pairing_if_needed, CronTrigger(hour=0, minute=0))
-        scheduler.start()
+    # Scheduler
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(reset_pairing_if_needed, CronTrigger(hour=0, minute=0))
+    scheduler.start()
 
-        logger.info("🚀 Bot running with PTB v21.6 and daily reset scheduler.")
-        await app.run_polling()
+    # ---- Start bot without closing the loop ----
+    async def start_bot():
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        logger.info("🚀 Bot running...")
 
+    loop = asyncio.get_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(run_bot())
+        loop.run_until_complete(start_bot())
+        loop.run_forever()
     except RuntimeError:
-        # Handles "loop already running" on Render/Python 3.13
-        asyncio.ensure_future(run_bot())
+        # fallback for pre-running loop on Render
+        asyncio.ensure_future(start_bot())
         loop.run_forever()
