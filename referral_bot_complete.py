@@ -90,8 +90,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "right": 0,
             "referrals": [],
             "paid": False,
-            "txid": None,
-            "proof_screenshot": None
+            "txid": None
         }
 
         if context.args:
@@ -122,7 +121,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # -----------------------
-# Pay command (TXID or screenshot)
+# Pay command (TXID only)
 # -----------------------
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -136,13 +135,19 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ You are already confirmed as paid.")
         return
 
-    # Case 1: TXID as argument
-    if context.args and len(context.args) == 1:
-        txid = context.args[0]
-        user["txid"] = txid
-        user.pop("proof_screenshot", None)
-        save_data()
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text(
+            "Usage: /pay <TXID>\n\n"
+            "💡 TXID = Transaction Hash / Transaction ID from your payment."
+        )
+        return
 
+    txid = context.args[0]
+    user["txid"] = txid
+    save_data()
+
+    # Notify admin
+    try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=(
@@ -151,41 +156,12 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"TXID: {txid}"
             )
         )
+    except Exception as e:
+        logger.error(f"Failed to notify admin: {e}")
 
-        await update.message.reply_text(
-            "✅ TXID submitted successfully. Admin will verify your payment soon."
-        )
-        return
-
-    # Case 2: Screenshot as photo
-    if update.message.photo:
-        photo_file = await update.message.photo[-1].get_file()
-        file_path = f"proof_{user_id}_{int(datetime.utcnow().timestamp())}.jpg"
-        await photo_file.download_to_drive(file_path)
-
-        user["proof_screenshot"] = file_path
-        user.pop("txid", None)
-        save_data()
-
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                f"💳 New payment screenshot submitted!\n"
-                f"User ID: {user_id}\n"
-                f"Screenshot saved as: {file_path}"
-            )
-        )
-
-        await update.message.reply_text(
-            "✅ Screenshot submitted successfully. Admin will verify your payment soon."
-        )
-        return
-
-    # If neither TXID nor screenshot
     await update.message.reply_text(
-        "Usage:\n"
-        "/pay <TXID> - Submit transaction ID\n"
-        "Or send /pay with a screenshot of your payment as an image."
+        "✅ TXID submitted successfully. Admin will verify your payment soon.\n\n"
+        "💡 Note: TXID = Transaction Hash / Transaction ID from your payment."
     )
 
 # -----------------------
@@ -211,10 +187,8 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     txid = user.get("txid")
-    proof_screenshot = user.get("proof_screenshot")
-
-    if not txid and not proof_screenshot:
-        await update.message.reply_text("❌ User has not submitted TXID or screenshot yet.")
+    if not txid:
+        await update.message.reply_text("❌ User has not submitted a TXID yet.")
         return
 
     # Mark user as paid
@@ -239,15 +213,9 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_data()
 
-    details_text = ""
-    if txid:
-        details_text += f"TXID: {txid}\n"
-    if proof_screenshot:
-        details_text += f"Screenshot: {proof_screenshot}\n"
-
     await update.message.reply_text(
         f"✅ User {target_user_id} confirmed as paid.\n"
-        f"{details_text}"
+        f"TXID: {txid}\n"
         f"Bonuses credited to referrer.\n\n"
         f"Here is your premium signals channel link:\n{PREMIUM_GROUP}"
     )
@@ -257,7 +225,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=int(target_user_id),
             text=(
                 "✅ Your payment has been confirmed!\n"
-                f"{details_text}"
+                f"TXID: {txid}\n"
                 "You now have access to the premium signals channel.\n"
                 f"{PREMIUM_GROUP}"
             )
@@ -266,7 +234,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to notify user {target_user_id}: {e}")
 
 # -----------------------
-# Balance, stats, withdraw, processwithdraw (unchanged)
+# Balance, stats, withdraw, processwithdraw
 # -----------------------
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_pairing_if_needed()
@@ -401,8 +369,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💵 /balance - Check your current balance\n"
         "📊 /stats - View your referral stats\n"
         "🏦 /withdraw <BEP20_wallet> - Request withdrawal (min 20 USDT)\n"
-        "💳 /pay <TXID> - Submit your payment transaction ID\n"
-        "💳 /pay + screenshot - Or send /pay with a screenshot image as proof of payment\n"
+        "💳 /pay <TXID> - Submit your payment Transaction Hash / Transaction ID\n"
         "❓ /help - Show this menu"
     )
 
