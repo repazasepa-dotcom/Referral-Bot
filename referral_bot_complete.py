@@ -10,18 +10,18 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-# -------------------------------------------------
-# Logging setup
-# -------------------------------------------------
+# -----------------------
+# Logging
+# -----------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# -------------------------------------------------
-# Database helpers
-# -------------------------------------------------
+# -----------------------
+# Storage
+# -----------------------
 DATA_FILE = "users.json"
 
 def load_data():
@@ -36,19 +36,20 @@ def save_data(data):
 
 users = load_data()
 
-# -------------------------------------------------
-# Utilities
-# -------------------------------------------------
+# -----------------------
+# Helpers
+# -----------------------
 def get_user(user_id):
-    if str(user_id) not in users:
-        users[str(user_id)] = {
+    uid = str(user_id)
+    if uid not in users:
+        users[uid] = {
             "balance": 0,
             "referrals": [],
-            "joined": datetime.now().isoformat(),
+            "joined": datetime.utcnow().isoformat(),
             "pair_left": 0,
             "pair_right": 0,
         }
-    return users[str(user_id)]
+    return users[uid]
 
 def reset_pairing_if_needed():
     for uid in users:
@@ -57,11 +58,11 @@ def reset_pairing_if_needed():
     save_data(users)
     logger.info("✅ Daily pairing reset completed.")
 
-# -------------------------------------------------
+# -----------------------
 # Command Handlers
-# -------------------------------------------------
+# -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = get_user(update.effective_user.id)
+    get_user(update.effective_user.id)
     save_data(users)
     await update.message.reply_text(
         "🔥 Welcome to the Premium Member Refer-to-Earn Bot!\n\n"
@@ -71,9 +72,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user = get_user(user_id)
+    get_user(user_id)
 
-    # handle screenshot or TXID
     if update.message.photo:
         await update.message.reply_text("📸 Screenshot received! Please wait for admin confirmation.")
     elif context.args:
@@ -145,19 +145,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❓ Unknown command. Type /help for assistance.")
 
-# -------------------------------------------------
+# -----------------------
 # Run Bot
-# -------------------------------------------------
+# -----------------------
 if __name__ == "__main__":
     import asyncio
 
-    async def run():
+    async def run_bot():
         token = os.getenv("BOT_TOKEN")
         if not token:
             raise ValueError("BOT_TOKEN not set in environment variables!")
 
         app = ApplicationBuilder().token(token).build()
 
+        # Handlers
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("pay", pay))
         app.add_handler(MessageHandler(filters.PHOTO, pay))
@@ -177,4 +178,10 @@ if __name__ == "__main__":
         logger.info("🚀 Bot running with PTB v21.6 and daily reset scheduler.")
         await app.run_polling()
 
-    asyncio.run(run())
+    try:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(run_bot())
+    except RuntimeError:
+        # Handles "loop already running" on Render/Python 3.13
+        asyncio.ensure_future(run_bot())
+        loop.run_forever()
