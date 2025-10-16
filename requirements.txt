@@ -1,4 +1,6 @@
-python-telegram-bot>=20.3,<21.0
+python-telegram-bot==20.3
+# force uninstall old bits
+--only-binary=:all:
 apscheduler==3.10.4
 certifi>=2023.7.22
 requests>=2.31.0
