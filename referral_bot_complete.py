@@ -122,7 +122,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "referrals": [],
             "paid": False,
             "txid": None,
-            "investments": []
+            "investments": [],
+            "pending_investments": []
         }
 
         if context.args:
@@ -287,7 +288,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 # -----------------------
-# Withdraw & process
+# Withdraw & process with locked investment protection
 # -----------------------
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -296,16 +297,19 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are not registered yet. Use /start first.")
         return
 
-    # Lock investments
-    locked_total = sum(
-        inv["amount"] for inv in user.get("investments", [])
-        if datetime.utcnow() < datetime.fromisoformat(inv["locked_until"])
-    )
-    available_balance = user.get("balance", 0)
+    # Calculate total locked investment amount
+    locked_total = 0
+    now = datetime.utcnow()
+    for inv in user.get("investments", []):
+        locked_until = datetime.fromisoformat(inv["locked_until"])
+        if now < locked_until:
+            locked_total += inv["amount"]
 
+    available_balance = user.get("balance", 0) - locked_total
     if available_balance < MIN_WITHDRAW:
         await update.message.reply_text(
-            f"Your available balance is {available_balance} USDT. Minimum withdrawal is {MIN_WITHDRAW} USDT."
+            f"Your available balance for withdrawal is {available_balance} USDT.\n"
+            f"Minimum withdrawal is {MIN_WITHDRAW} USDT."
         )
         return
 
@@ -320,7 +324,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user["pending_withdraw"] = {
         "amount": available_balance,
         "wallet": wallet_address,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now.isoformat()
     }
     save_data()
 
@@ -344,6 +348,9 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Failed to notify admin: {e}")
 
+# -----------------------
+# Process withdrawals by admin
+# -----------------------
 async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
@@ -383,118 +390,84 @@ async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
-
     if not user:
-        await update.message.reply_text("❌ Use /start first.")
+        await update.message.reply_text("❌ You are not registered. Use /start first.")
         return
 
     if not context.args or len(context.args) != 1:
-        await update.message.reply_text("Usage: /invest <amount>")
+        await update.message.reply_text(f"Usage: /invest <amount> (send to {INVEST_ADDRESS})")
         return
 
-    try:
-        amount = float(context.args[0])
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("❌ Invalid amount.")
-        return
-
-    now = datetime.utcnow()
-    locked_until = now + timedelta(days=INVEST_LOCK_DAYS)
-    investment = {
+    amount = float(context.args[0])
+    user["pending_investments"].append({
         "amount": amount,
-        "start_date": now.isoformat(),
-        "last_profit_date": now.isoformat(),
-        "locked_until": locked_until.isoformat()
-    }
-
-    user.setdefault("investments", []).append(investment)
+        "timestamp": datetime.utcnow().isoformat(),
+        "confirmed": False
+    })
     save_data()
 
     await update.message.reply_text(
-        f"✅ Investment recorded: {amount} USDT.\n"
-        f"Send funds to:\n`{INVEST_ADDRESS}`\n"
-        f"1% daily profit will go to your balance automatically.\n"
-        f"Investment locked until {locked_until.date()}",
-        parse_mode="Markdown"
+        f"✅ Investment request of {amount} USDT received!\n"
+        f"Admin will confirm after checking your deposit to {INVEST_ADDRESS}."
     )
+
+async def pending_invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    user = users.get(user_id)
+    if not user:
+        await update.message.reply_text("❌ You are not registered. Use /start first.")
+        return
+
+    pending = user.get("pending_investments", [])
+    msg = "\n".join([f"{inv['amount']} USDT - Pending" for inv in pending if not inv.get("confirmed", False)])
+    if not msg:
+        msg = "No pending investments."
+    await update.message.reply_text(msg)
 
 async def investstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
-
-    investments = user.get("investments", [])
-    if not investments:
-        await update.message.reply_text("❌ No active investments.")
+    if not user:
+        await update.message.reply_text("❌ You are not registered. Use /start first.")
         return
 
-    msg = "📈 **Your Investments:**\n"
-    for i, inv in enumerate(investments, 1):
-        amount = inv["amount"]
-        start = inv["start_date"].split("T")[0]
-        locked_until = inv["locked_until"].split("T")[0]
-        msg += f"{i}. Amount: {amount} USDT | Start: {start} | Locked until: {locked_until}\n"
+    now = datetime.utcnow()
+    investments = user.get("investments", [])
+    if not investments:
+        await update.message.reply_text("You have no active investments.")
+        return
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    msg_lines = []
+    for inv in investments:
+        locked_until = datetime.fromisoformat(inv["locked_until"])
+        remaining_days = (locked_until - now).days
+        msg_lines.append(f"{inv['amount']} USDT - Locked {remaining_days} days left")
 
-# -----------------------
-# Help & unknown
-# -----------------------
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    is_admin = user_id == ADMIN_ID
+    await update.message.reply_text("\n".join(msg_lines))
 
-    help_text = (
-        "📌 Available Commands:\n\n"
-        "✨ /start - Register and see referral link & benefits\n"
-        "💵 /balance - Check your current balance\n"
-        "📊 /stats - View your referral stats\n"
-        "🏦 /withdraw <BEP20_wallet> - Request withdrawal (min 20 USDT)\n"
-        "💳 /pay <TXID> - Submit your payment transaction ID\n"
-        "💹 /invest <amount> - Invest funds to earn 1% daily (locked 30 days)\n"
-        "📈 /investstats - View your active investments\n"
-        "❓ /help - Show this menu"
-    )
+async def confirm_invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ You are not authorized.")
+        return
 
-    if is_admin:
-        help_text += (
-            "\n\n--- Admin Commands ---\n"
-            "/confirm <user_id> - Confirm user payment & give premium access\n"
-            "/processwithdraw <user_id> - Process a withdrawal request"
-        )
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("Usage: /confirminvest <user_id>")
+        return
 
-    await update.message.reply_text(help_text)
+    target_user_id = context.args[0]
+    user = users.get(target_user_id)
+    if not user or not user.get("pending_investments"):
+        await update.message.reply_text("❌ No pending investment for this user.")
+        return
 
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Unknown command. Type /help to see available commands.")
+    for inv in user["pending_investments"]:
+        if not inv.get("confirmed", False):
+            inv["confirmed"] = True
+            inv["last_profit_date"] = datetime.utcnow().isoformat()
+            inv["locked_until"] = (datetime.utcnow() + timedelta(days=INVEST_LOCK_DAYS)).isoformat()
+            user["investments"].append(inv)
 
-# -----------------------
-# Main
-# -----------------------
-if __name__ == "__main__":
-    TOKEN = os.environ.get("BOT_TOKEN")
-    if not TOKEN:
-        raise ValueError("⚠️ BOT_TOKEN environment variable not set!")
+    user["pending_investments"] = [inv for inv in user["pending_investments"] if not inv.get("confirmed", False)]
+    save_data()
 
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    # Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("pay", pay))
-    app.add_handler(CommandHandler("confirm", confirm))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("withdraw", withdraw))
-    app.add_handler(CommandHandler("processwithdraw", process_withdraw))
-    app.add_handler(CommandHandler("invest", invest))
-    app.add_handler(CommandHandler("investstats", investstats))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
-
-    # Run daily profit accrual in background
-    loop = asyncio.get_event_loop()
-    loop.create_task(accrue_invest_profits())
-
-    # Run polling
-    app.run_polling()
+    await update.message.reply_text(f"✅ Investments confirmed for user {target_user_id}.")
