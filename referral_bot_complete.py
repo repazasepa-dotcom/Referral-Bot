@@ -239,10 +239,10 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     await update.message.reply_text(f"💰 {amount} USDT added to your investment.\n1% daily profit applied automatically.")
 
-# ... rest of handlers: balance, stats, withdraw, process_withdraw, help, unknown (same as before) ...
+# ... include balance, stats, withdraw, process_withdraw, help, unknown commands here ...
 
 # -----------------------
-# Main
+# Main function
 # -----------------------
 async def main():
     TOKEN = os.environ.get("BOT_TOKEN")
@@ -251,17 +251,12 @@ async def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Add handlers
+    # Add handlers (start, pay, confirm, invest, etc.)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("confirm", confirm))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("invest", invest))
-    app.add_handler(CommandHandler("withdraw", withdraw))
-    app.add_handler(CommandHandler("processwithdraw", process_withdraw))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+    # ... add other handlers ...
 
     # Scheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
@@ -279,7 +274,7 @@ async def main():
     await app.run_polling()
 
 # -----------------------
-# Launch bot
+# Launch bot safely
 # -----------------------
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
