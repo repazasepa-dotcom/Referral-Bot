@@ -9,6 +9,7 @@ from telegram.ext import (
     MessageHandler, filters
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import asyncio
 
 # -----------------------
 # Logging
@@ -136,9 +137,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# -----------------------
-# TXID submission
-# -----------------------
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
@@ -175,9 +173,6 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ TXID submitted successfully. Admin will verify your payment soon."
     )
 
-# -----------------------
-# Admin confirms payment
-# -----------------------
 async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
@@ -211,7 +206,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users[ref_id]["balance"] += DIRECT_BONUS
         users[ref_id]["earned_from_referrals"] += DIRECT_BONUS
 
-        # Pairing bonus logic
         side = "left" if users[ref_id]["left"] <= users[ref_id]["right"] else "right"
         if users[ref_id][side] < MAX_PAIRS_PER_DAY:
             users[ref_id][side] += 1
@@ -226,9 +220,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Here is your premium signals channel link:\n{PREMIUM_GROUP}"
     )
 
-# -----------------------
-# User investment
-# -----------------------
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
@@ -248,7 +239,6 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid amount. Enter a positive number.")
         return
 
-    # Lock investment
     user["investment"] += amount
     save_data()
 
@@ -257,9 +247,6 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Daily profits (1%) will be added automatically."
     )
 
-# -----------------------
-# Balance & stats
-# -----------------------
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_pairing_if_needed()
     user_id = str(update.effective_user.id)
@@ -298,14 +285,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Direct referrals: {num_referrals}\n"
         f"Left pairs today: {left}\n"
         f"Right pairs today: {right}\n"
-        f"Membership paid: {'✅' if paid else '❌'}\n"
-        f"Current investment: {investment} USDT"
+        f"Investment: {investment} USDT\n"
+        f"Membership paid: {'✅' if paid else '❌'}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# -----------------------
-# Withdraw
-# -----------------------
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
@@ -327,7 +311,6 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     wallet_address = context.args[0]
-
     user["pending_withdraw"] = {
         "amount": balance_amount,
         "wallet": wallet_address,
@@ -336,28 +319,20 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
 
     await update.message.reply_text(
-        f"✅ Withdrawal request received!\n"
-        f"Amount: {balance_amount} USDT\n"
-        f"Wallet: {wallet_address}\n"
-        "Admin will verify and process your withdrawal."
+        f"✅ Withdrawal request received!\nAmount: {balance_amount} USDT\nWallet: {wallet_address}\nAdmin will process it."
     )
 
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=(
-                f"💰 New withdrawal request!\n"
-                f"User ID: {user_id}\n"
-                f"Amount: {balance_amount} USDT\n"
-                f"Wallet: {wallet_address}"
-            )
+            text=f"💰 New withdrawal request!\nUser ID: {user_id}\nAmount: {balance_amount} USDT\nWallet: {wallet_address}"
         )
     except Exception as e:
         logger.error(f"Failed to notify admin: {e}")
 
 async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
+        await update.message.reply_text("❌ You are not authorized.")
         return
 
     if not context.args or len(context.args) != 1:
@@ -367,7 +342,7 @@ async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_user_id = context.args[0]
     user = users.get(target_user_id)
     if not user or "pending_withdraw" not in user:
-        await update.message.reply_text("❌ No pending withdrawal for this user.")
+        await update.message.reply_text("❌ No pending withdrawal.")
         return
 
     pending = user.pop("pending_withdraw")
@@ -378,56 +353,42 @@ async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(
             chat_id=int(target_user_id),
-            text=(
-                f"✅ Your withdrawal request has been processed!\n"
-                f"Amount: {amount} USDT\n"
-                "Funds will arrive in your BEP20 wallet shortly."
-            )
+            text=f"✅ Your withdrawal request has been processed!\nAmount: {amount} USDT"
         )
-        await update.message.reply_text(f"✅ User {target_user_id} has been notified.")
+        await update.message.reply_text(f"✅ User {target_user_id} notified.")
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to notify user: {e}")
 
-# -----------------------
-# Help & unknown
-# -----------------------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     is_admin = user_id == ADMIN_ID
 
     help_text = (
-        "📌 Available Commands:\n\n"
-        "✨ /start - Register and see referral link & benefits\n"
-        "💵 /balance - Check your current balance\n"
-        "📊 /stats - View your referral stats\n"
-        "🏦 /withdraw <BEP20_wallet> - Request withdrawal (min 20 USDT)\n"
-        "💳 /pay <TXID> - Submit your payment transaction ID\n"
-        "💰 /invest <amount> - Add investment to auto trading\n"
-        "❓ /help - Show this menu"
+        "📌 Commands:\n"
+        "/start - Register and get referral link\n"
+        "/pay <TXID> - Submit payment\n"
+        "/balance - Check balance\n"
+        "/stats - View stats\n"
+        "/invest <amount> - Invest in auto trading\n"
+        "/withdraw <BEP20_wallet> - Request withdrawal\n"
+        "/help - Show this menu"
     )
 
     if is_admin:
-        help_text += (
-            "\n\n--- Admin Commands ---\n"
-            "/confirm <user_id> - Confirm user payment & give premium access\n"
-            "/confirminvest <user_id> - Confirm user's investment\n"
-            "/processwithdraw <user_id> - Process a withdrawal request"
-        )
+        help_text += "\n/admin:\n/confirm <user_id>\n/processwithdraw <user_id>"
 
     await update.message.reply_text(help_text)
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Unknown command. Type /help to see available commands.")
+    await update.message.reply_text("❌ Unknown command. Type /help.")
 
 # -----------------------
 # Main
 # -----------------------
-if __name__ == "__main__":
-    import asyncio
-
+async def main():
     TOKEN = os.environ.get("BOT_TOKEN")
     if not TOKEN:
-        raise ValueError("⚠️ BOT_TOKEN environment variable not set!")
+        raise ValueError("⚠️ BOT_TOKEN not set!")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -437,28 +398,26 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("confirm", confirm))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("invest", invest))
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("processwithdraw", process_withdraw))
-    app.add_handler(CommandHandler("invest", invest))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
     # Scheduler
     scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(add_daily_profit, 'cron', hour=0, minute=0)
+    scheduler.add_job(add_daily_profit, 'cron', hour=0, minute=0)  # Daily profit at 00:00 UTC
     scheduler.start()
-    logger.info("Scheduler started: Daily profit job added.")
+    logger.info("Scheduler started.")
 
-    # Startup message to admin
-    async def send_startup_message():
-        try:
-            await app.bot.send_message(chat_id=ADMIN_ID, text="✅ Bot is live and running!")
-            logger.info("Startup message sent to admin.")
-        except Exception as e:
-            logger.error(f"Failed to send startup message: {e}")
-
-    asyncio.get_event_loop().create_task(send_startup_message())
+    # Notify admin
+    try:
+        await app.bot.send_message(chat_id=ADMIN_ID, text="✅ Bot is live!")
+    except Exception as e:
+        logger.error(f"Admin notification failed: {e}")
 
     # Run bot
-    logger.info("Bot started successfully. Running polling...")
-    app.run_polling()
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
