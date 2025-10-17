@@ -437,4 +437,144 @@ async def confirm_invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
 
-    if
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("Usage: /confirminvest <user_id>")
+        return
+
+    target_user_id = context.args[0]
+    user = users.get(target_user_id)
+    invest = investments.get(target_user_id)
+
+    if not user or not invest:
+        await update.message.reply_text("❌ No pending investment found for this user.")
+        return
+
+    if invest.get("confirmed"):
+        await update.message.reply_text("✅ Investment already confirmed.")
+        return
+
+    # Confirm the investment
+    invest["confirmed"] = True
+    user["investment"] = invest["amount"]
+    user["investment_timestamp"] = datetime.utcnow().isoformat()
+    save_investments()
+    save_data()
+
+    await update.message.reply_text(
+        f"✅ Investment of {invest['amount']} USDT confirmed for user {target_user_id}."
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_user_id),
+            text=f"✅ Your investment of {invest['amount']} USDT has been confirmed by admin.\n"
+                 f"It will be locked for 30 days. You earn 1% profit daily."
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify user: {e}")
+
+# -----------------------
+# Admin distribute daily profit
+# -----------------------
+async def distribute_profit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    total_distributed = 0
+    for user_id, invest in investments.items():
+        if invest.get("confirmed"):
+            user = users.get(user_id)
+            if not user:
+                continue
+            amount = invest["amount"]
+            profit = round(amount * 0.01, 2)  # 1% profit
+            user["balance"] += profit
+            total_distributed += profit
+
+    save_data()
+    await update.message.reply_text(f"✅ Daily profit distributed to all investors. Total: {total_distributed} USDT")
+
+# -----------------------
+# FAQ command
+# -----------------------
+async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    faq_text = (
+        "💹 **Auto-Trading Investment Feature**\n\n"
+        "🔹 **What it is:**\n"
+        "You can invest USDT directly with the bot to participate in an auto-trading system. "
+        "Your investment earns 1% profit per day automatically.\n\n"
+        "🔹 **How it works:**\n"
+        "1️⃣ Minimum investment: 50 USDT\n"
+        "2️⃣ Deposit: Send USDT to the provided BEP20 address and submit your TXID using /invest <amount> <TXID>\n"
+        "3️⃣ Admin confirmation: Admin will verify and confirm your investment\n"
+        "4️⃣ Locked period: Investment balance is locked for 30 days\n"
+        "5️⃣ Daily profit: 1% of investment per day\n"
+        "   - Example: Invest 100 USDT → earn 1 USDT/day\n"
+        "6️⃣ Referral bonuses: Earn extra if your referrals pay\n\n"
+        "⚠️ Your original investment is locked for 30 days.\n"
+        "💰 Profits are added to your withdrawable balance.\n"
+        "🔗 Referral rewards are separate but also increase your balance."
+    )
+    await update.message.reply_text(faq_text, parse_mode="Markdown")
+
+# -----------------------
+# Help & unknown
+# -----------------------
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    is_admin = user_id == ADMIN_ID
+
+    help_text = (
+        "📌 **Available Commands:**\n\n"
+        "✨ /start - Register and see referral link & benefits\n"
+        "💵 /balance - Check your current balance\n"
+        "📊 /stats - View your referral stats\n"
+        "🏦 /withdraw <BEP20_wallet> - Request withdrawal (min 20 USDT)\n"
+        "💳 /pay <TXID> - Submit your payment transaction ID\n"
+        "📈 /invest <amount> <TXID> - Invest in auto-trading\n"
+        "❓ /faq - See investment FAQ\n"
+        "❓ /help - Show this menu"
+    )
+
+    if is_admin:
+        help_text += (
+            "\n\n--- Admin Commands ---\n"
+            "/confirm <user_id> - Confirm user payment\n"
+            "/processwithdraw <user_id> - Process withdrawal request\n"
+            "/confirminvest <user_id> - Confirm investment\n"
+            "/distributeprofit - Distribute daily profits to investors"
+        )
+
+    await update.message.reply_text(help_text)
+
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Unknown command. Type /help to see available commands.")
+
+# -----------------------
+# Main
+# -----------------------
+if __name__ == "__main__":
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        raise ValueError("⚠️ BOT_TOKEN environment variable not set!")
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("pay", pay))
+    app.add_handler(CommandHandler("confirm", confirm))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("withdraw", withdraw))
+    app.add_handler(CommandHandler("processwithdraw", process_withdraw))
+    app.add_handler(CommandHandler("invest", invest))
+    app.add_handler(CommandHandler("confirminvest", confirm_invest))
+    app.add_handler(CommandHandler("distributeprofit", distribute_profit))
+    app.add_handler(CommandHandler("faq", faq))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    # Run polling
+    app.run_polling()
