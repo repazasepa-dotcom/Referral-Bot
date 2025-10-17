@@ -88,6 +88,7 @@ def distribute_daily_profit():
                 profit = invest["amount"] * DAILY_PROFIT_PERCENT
                 user["balance"] += profit
     save_data()
+    logger.info("💹 Daily profit distributed to investors.")
 
 # -----------------------
 # Command handlers
@@ -206,81 +207,53 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await update.message.reply_text("❌ Use /start first.")
         return
-
     balance_amount = user.get("balance", 0)
     if balance_amount < MIN_WITHDRAW:
-        await update.message.reply_text(
-            f"Your balance is {balance_amount:.2f} USDT. Minimum withdrawal is {MIN_WITHDRAW} USDT."
-        )
+        await update.message.reply_text(f"Your balance is {balance_amount:.2f} USDT. Minimum withdrawal is {MIN_WITHDRAW} USDT.")
         return
-
     if not context.args:
-        await update.message.reply_text(
-            "🏦 Please provide your BEP20 wallet address. Usage:\n/withdraw <wallet_address>"
-        )
+        await update.message.reply_text("🏦 Please provide your BEP20 wallet address. Usage:\n/withdraw <wallet_address>")
         return
-
     wallet_address = context.args[0]
-
-    # Save pending withdrawal
     user["pending_withdraw"] = {
         "amount": balance_amount,
         "wallet": wallet_address,
         "timestamp": datetime.utcnow().isoformat()
     }
     save_data()
-
     await update.message.reply_text(
-        f"✅ Withdrawal request received!\n"
-        f"Amount: {balance_amount:.2f} USDT\n"
-        f"Wallet: {wallet_address}\n"
-        "Admin will verify and process your withdrawal."
+        f"✅ Withdrawal request received!\nAmount: {balance_amount:.2f} USDT\nWallet: {wallet_address}\nAdmin will verify and process."
     )
-
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=(
-                f"💰 New withdrawal request!\n"
-                f"User ID: {user_id}\n"
-                f"Amount: {balance_amount:.2f} USDT\n"
-                f"Wallet: {wallet_address}"
-            )
+            text=f"💰 New withdrawal request!\nUser ID: {user_id}\nAmount: {balance_amount:.2f} USDT\nWallet: {wallet_address}"
         )
     except Exception as e:
         logger.error(f"Failed to notify admin: {e}")
-
 
 async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ You are not authorized.")
         return
-
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("Usage: /processwithdraw <user_id>")
         return
-
     target_user_id = context.args[0]
     user = users.get(target_user_id)
     if not user or "pending_withdraw" not in user:
         await update.message.reply_text("❌ No pending withdrawal for this user.")
         return
-
     pending = user.pop("pending_withdraw")
     amount = pending["amount"]
     user["balance"] -= amount
     save_data()
-
     try:
         await context.bot.send_message(
             chat_id=int(target_user_id),
-            text=(
-                f"✅ Your withdrawal request has been processed!\n"
-                f"Amount: {amount:.2f} USDT\n"
-                "Funds will arrive in your BEP20 wallet shortly."
-            )
+            text=f"✅ Your withdrawal of {amount:.2f} USDT has been processed!"
         )
-        await update.message.reply_text(f"✅ User {target_user_id} has been notified.")
+        await update.message.reply_text(f"✅ User {target_user_id} notified.")
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to notify user: {e}")
 
@@ -296,19 +269,15 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) != 2:
         await update.message.reply_text(f"💹 Usage: /invest <amount> <TXID>\nMinimum {INVEST_MIN} USDT")
         return
-
     try:
         amount = float(context.args[0])
     except ValueError:
         await update.message.reply_text("❌ Invalid amount.")
         return
-
     txid = context.args[1]
-
     if amount < INVEST_MIN:
         await update.message.reply_text(f"❌ Minimum investment is {INVEST_MIN} USDT")
         return
-
     user["investment"] = {
         "amount": amount,
         "txid": txid,
@@ -316,7 +285,6 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "start_date": datetime.utcnow().isoformat()
     }
     save_data()
-
     await update.message.reply_text(
         f"💹 Investment of {amount:.2f} USDT confirmed!\n"
         f"🔒 Locked for {INVEST_LOCK_DAYS} days\n"
@@ -333,7 +301,6 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await update.message.reply_text("❌ Use /start first.")
         return
-
     bal = user.get("balance", 0)
     earned = user.get("earned_from_referrals", 0)
     await update.message.reply_text(f"💰 Your balance: {bal:.2f} USDT\n💎 Earned from referrals: {earned:.2f} USDT")
@@ -345,14 +312,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await update.message.reply_text("❌ Use /start first.")
         return
-
     num_referrals = len(user.get("referrals", []))
     left = user.get("left", 0)
     right = user.get("right", 0)
     balance_amount = user.get("balance", 0)
     earned_from_referrals = user.get("earned_from_referrals", 0)
     paid = user.get("paid", False)
-
     invest_info = ""
     invest = user.get("investment", {})
     if invest.get("paid"):
@@ -364,7 +329,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"\n⏳ Locked for {INVEST_LOCK_DAYS} days"
             f"\n🕒 Days remaining: {days_left} days"
         )
-
     msg = (
         f"📊 **Your Stats:**\n"
         f"Balance: {balance_amount:.2f} USDT\n"
@@ -383,7 +347,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "💡 **FAQ - Earning Opportunities**\n\n"
-        "💹 **Invest in Auto-Trading:**\n"
+        f"💹 **Invest in Auto-Trading:**\n"
         f"• Minimum: {INVEST_MIN} USDT\n"
         f"• Send USDT to `{BNB_ADDRESS}` and submit TXID\n"
         f"• Locked for {INVEST_LOCK_DAYS} days ⏳\n"
