@@ -263,9 +263,26 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await update.message.reply_text("❌ Use /start first.")
         return
+
     bal = user.get("balance", 0)
     earned = user.get("earned_from_referrals", 0)
-    await update.message.reply_text(f"💰 Balance: {bal:.2f} USDT\n💎 Earned from referrals: {earned:.2f} USDT")
+
+    invest_info = ""
+    invest = user.get("investment", {})
+    if invest.get("paid"):
+        start_date = datetime.fromisoformat(invest["start_date"])
+        locked_until = start_date + timedelta(days=INVEST_LOCK_DAYS)
+        days_left = max((locked_until - datetime.utcnow()).days, 0)
+        invest_info = (
+            f"\n💹 Investment: {invest['amount']:.2f} USDT"
+            f"\n⏳ Locked for {INVEST_LOCK_DAYS} days"
+            f"\n🕒 Days remaining: {days_left} days"
+        )
+
+    await update.message.reply_text(
+        f"💰 Balance: {bal:.2f} USDT\n💎 Earned from referrals: {earned:.2f} USDT"
+        f"{invest_info}"
+    )
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_pairing_if_needed()
@@ -274,12 +291,26 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         await update.message.reply_text("❌ Use /start first.")
         return
+
     num_referrals = len(user.get("referrals", []))
     left = user.get("left", 0)
     right = user.get("right", 0)
     balance_amount = user.get("balance", 0)
     earned_from_referrals = user.get("earned_from_referrals", 0)
     paid = user.get("paid", False)
+
+    invest_info = ""
+    invest = user.get("investment", {})
+    if invest.get("paid"):
+        start_date = datetime.fromisoformat(invest["start_date"])
+        locked_until = start_date + timedelta(days=INVEST_LOCK_DAYS)
+        days_left = max((locked_until - datetime.utcnow()).days, 0)
+        invest_info = (
+            f"\n💹 Investment: {invest['amount']:.2f} USDT"
+            f"\n⏳ Locked for {INVEST_LOCK_DAYS} days"
+            f"\n🕒 Days remaining: {days_left} days"
+        )
+
     msg = (
         f"📊 **Your Stats:**\n"
         f"Balance: {balance_amount:.2f} USDT\n"
@@ -288,65 +319,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Left pairs today: {left}\n"
         f"Right pairs today: {right}\n"
         f"Membership paid: {'✅' if paid else '❌'}"
+        f"{invest_info}"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    user = users.get(user_id)
-    if not user:
-        await update.message.reply_text("❌ Use /start first.")
-        return
-    balance_amount = user.get("balance", 0)
-    if balance_amount < MIN_WITHDRAW:
-        await update.message.reply_text(f"❌ Balance {balance_amount:.2f} USDT. Minimum: {MIN_WITHDRAW} USDT.")
-        return
-    if not context.args:
-        await update.message.reply_text("🏦 Usage: /withdraw <BEP20_wallet_address>")
-        return
-    wallet_address = context.args[0]
-    user["pending_withdraw"] = {
-        "amount": balance_amount,
-        "wallet": wallet_address,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    save_data()
-    await update.message.reply_text(f"✅ Withdrawal request received!\nAmount: {balance_amount:.2f} USDT\nWallet: {wallet_address}\nAdmin will process it soon.")
-    try:
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=f"💰 New withdrawal request!\nUser ID: {user_id}\nAmount: {balance_amount:.2f} USDT\nWallet: {wallet_address}"
-        )
-    except Exception as e:
-        logger.error(f"Failed to notify admin: {e}")
-
-async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You are not authorized.")
-        return
-    if not context.args or len(context.args) != 1:
-        await update.message.reply_text("✅ Usage: /processwithdraw <user_id>")
-        return
-    target_user_id = context.args[0]
-    user = users.get(target_user_id)
-    if not user or "pending_withdraw" not in user:
-        await update.message.reply_text("❌ No pending withdrawal.")
-        return
-    pending = user.pop("pending_withdraw")
-    amount = pending["amount"]
-    user["balance"] -= amount
-    save_data()
-    try:
-        await context.bot.send_message(
-            chat_id=int(target_user_id),
-            text=f"✅ Withdrawal processed!\nAmount: {amount:.2f} USDT\nFunds will arrive soon."
-        )
-        await update.message.reply_text(f"✅ User {target_user_id} notified.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Failed to notify user: {e}")
-
 # -----------------------
-# FAQ command
+# FAQ
 # -----------------------
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
