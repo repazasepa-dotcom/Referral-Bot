@@ -2,7 +2,8 @@
 import logging
 import json
 import os
-from datetime import datetime
+import asyncio
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
@@ -52,6 +53,11 @@ BNB_ADDRESS = "0xC6219FFBA27247937A63963E4779e33F7930d497"
 PREMIUM_GROUP = "https://t.me/+ra4eSwIYWukwMjRl"
 MIN_WITHDRAW = 20
 
+# Invest feature
+INVEST_PROFIT_PERCENT = 1      # 1% daily
+INVEST_LOCK_DAYS = 30           # 30 days lock
+INVEST_ADDRESS = BNB_ADDRESS
+
 # -----------------------
 # Helper functions
 # -----------------------
@@ -75,6 +81,31 @@ def reset_pairing_if_needed():
         logger.info("Daily pairing counts reset.")
 
 # -----------------------
+# Accrue daily investment profits
+# -----------------------
+async def accrue_invest_profits():
+    while True:
+        now = datetime.utcnow()
+        updated = False
+
+        for user_id, user in users.items():
+            for inv in user.get("investments", []):
+                last_date = datetime.fromisoformat(inv["last_profit_date"])
+                days_passed = (now - last_date).days
+                if days_passed >= 1:
+                    profit = inv["amount"] * (INVEST_PROFIT_PERCENT / 100) * days_passed
+                    user["balance"] += profit
+                    inv["last_profit_date"] = now.isoformat()
+                    updated = True
+
+        if updated:
+            save_data()
+            logger.info("Daily investment profits credited.")
+
+        # Wait 24 hours
+        await asyncio.sleep(24 * 3600)
+
+# -----------------------
 # Command handlers
 # -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -90,7 +121,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "right": 0,
             "referrals": [],
             "paid": False,
-            "txid": None
+            "txid": None,
+            "investments": []
         }
 
         if context.args:
@@ -189,13 +221,12 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user["paid"] = True
     save_data()
 
-    # Always credit referrer bonuses even if referrer hasn't paid
+    # Referrer bonuses
     ref_id = user.get("referrer")
     if ref_id:
         users[ref_id]["balance"] += DIRECT_BONUS
         users[ref_id]["earned_from_referrals"] += DIRECT_BONUS
 
-        # Pairing bonus logic
         if users[ref_id]["left"] <= users[ref_id]["right"]:
             side = "left"
         else:
@@ -215,7 +246,7 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # -----------------------
-# User stats & balance
+# Balance & stats
 # -----------------------
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_pairing_if_needed()
@@ -265,10 +296,16 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are not registered yet. Use /start first.")
         return
 
-    balance_amount = user.get("balance", 0)
-    if balance_amount < MIN_WITHDRAW:
+    # Lock investments
+    locked_total = sum(
+        inv["amount"] for inv in user.get("investments", [])
+        if datetime.utcnow() < datetime.fromisoformat(inv["locked_until"])
+    )
+    available_balance = user.get("balance", 0)
+
+    if available_balance < MIN_WITHDRAW:
         await update.message.reply_text(
-            f"Your balance is {balance_amount} USDT. Minimum withdrawal is {MIN_WITHDRAW} USDT."
+            f"Your available balance is {available_balance} USDT. Minimum withdrawal is {MIN_WITHDRAW} USDT."
         )
         return
 
@@ -280,9 +317,8 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     wallet_address = context.args[0]
 
-    # Save pending withdrawal
     user["pending_withdraw"] = {
-        "amount": balance_amount,
+        "amount": available_balance,
         "wallet": wallet_address,
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -290,7 +326,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ Withdrawal request received!\n"
-        f"Amount: {balance_amount} USDT\n"
+        f"Amount: {available_balance} USDT\n"
         f"Wallet: {wallet_address}\n"
         "Admin will verify and process your withdrawal."
     )
@@ -301,7 +337,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=(
                 f"💰 New withdrawal request!\n"
                 f"User ID: {user_id}\n"
-                f"Amount: {balance_amount} USDT\n"
+                f"Amount: {available_balance} USDT\n"
                 f"Wallet: {wallet_address}"
             )
         )
@@ -342,6 +378,67 @@ async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Failed to notify user: {e}")
 
 # -----------------------
+# Invest commands
+# -----------------------
+async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    user = users.get(user_id)
+
+    if not user:
+        await update.message.reply_text("❌ Use /start first.")
+        return
+
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("Usage: /invest <amount>")
+        return
+
+    try:
+        amount = float(context.args[0])
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount.")
+        return
+
+    now = datetime.utcnow()
+    locked_until = now + timedelta(days=INVEST_LOCK_DAYS)
+    investment = {
+        "amount": amount,
+        "start_date": now.isoformat(),
+        "last_profit_date": now.isoformat(),
+        "locked_until": locked_until.isoformat()
+    }
+
+    user.setdefault("investments", []).append(investment)
+    save_data()
+
+    await update.message.reply_text(
+        f"✅ Investment recorded: {amount} USDT.\n"
+        f"Send funds to:\n`{INVEST_ADDRESS}`\n"
+        f"1% daily profit will go to your balance automatically.\n"
+        f"Investment locked until {locked_until.date()}",
+        parse_mode="Markdown"
+    )
+
+async def investstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    user = users.get(user_id)
+
+    investments = user.get("investments", [])
+    if not investments:
+        await update.message.reply_text("❌ No active investments.")
+        return
+
+    msg = "📈 **Your Investments:**\n"
+    for i, inv in enumerate(investments, 1):
+        amount = inv["amount"]
+        start = inv["start_date"].split("T")[0]
+        locked_until = inv["locked_until"].split("T")[0]
+        msg += f"{i}. Amount: {amount} USDT | Start: {start} | Locked until: {locked_until}\n"
+
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# -----------------------
 # Help & unknown
 # -----------------------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,6 +452,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 /stats - View your referral stats\n"
         "🏦 /withdraw <BEP20_wallet> - Request withdrawal (min 20 USDT)\n"
         "💳 /pay <TXID> - Submit your payment transaction ID\n"
+        "💹 /invest <amount> - Invest funds to earn 1% daily (locked 30 days)\n"
+        "📈 /investstats - View your active investments\n"
         "❓ /help - Show this menu"
     )
 
@@ -388,8 +487,14 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("processwithdraw", process_withdraw))
+    app.add_handler(CommandHandler("invest", invest))
+    app.add_handler(CommandHandler("investstats", investstats))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    # Run daily profit accrual in background
+    loop = asyncio.get_event_loop()
+    loop.create_task(accrue_invest_profits())
 
     # Run polling
     app.run_polling()
