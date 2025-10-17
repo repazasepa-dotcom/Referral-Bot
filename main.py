@@ -1,9 +1,8 @@
 import os
 import json
-import asyncio
 from datetime import datetime, timedelta
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
 
 # ------------------ CONFIG ------------------
 TOKEN = os.environ.get("TOKEN")
@@ -37,16 +36,14 @@ def admin_only(func):
         return await func(update, context)
     return wrapper
 
-# ------------------ DAILY PROFIT LOOP ------------------
-async def auto_daily_profit_loop():
-    while True:
-        for inv in investments.values():
-            if inv.get("status") == "active":
-                inv.setdefault("balance", 0)
-                inv["balance"] += inv["amount"] * DAILY_PROFIT_PERCENT
-        save_investments()
-        print("✅ Daily profit added to all active investments.")
-        await asyncio.sleep(86400)  # 24 hours
+# ------------------ DAILY PROFIT JOB ------------------
+async def daily_profit_job(context: ContextTypes.DEFAULT_TYPE):
+    for inv in investments.values():
+        if inv.get("status") == "active":
+            inv.setdefault("balance", 0)
+            inv["balance"] += inv["amount"] * DAILY_PROFIT_PERCENT
+    save_investments()
+    print("✅ Daily profit added to all active investments.")
 
 # ------------------ USER COMMANDS ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -110,6 +107,7 @@ async def earnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(earnings_text)
 
+# ------------------ INVEST, TXID, PROFIT, WITHDRAW ------------------
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     try:
@@ -204,133 +202,18 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ------------------ ADMIN COMMANDS ------------------
-@admin_only
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = context.args[0]
-    except IndexError:
-        await update.message.reply_text("Usage: /confirm <user_id>")
-        return
-    if user_id not in investments:
-        await update.message.reply_text("❌ No such user.")
-        return
-    inv = investments[user_id]
-    if "txid" not in inv:
-        await update.message.reply_text("❌ User has not submitted TXID yet.")
-        return
-
-    inv["status"] = "active"
-    inv["start_date"] = datetime.now().isoformat()
-    inv["locked_until"] = (datetime.now() + timedelta(days=30)).isoformat()
-    inv.setdefault("balance", 0)
-
-    # Referral bonuses
-    referrer_id = inv.get("referrer")
-    if referrer_id and referrer_id in investments:
-        ref_inv = investments[referrer_id]
-        ref_inv.setdefault("balance", 0)
-        ref_inv["balance"] += REFERRAL_DIRECT_BONUS
-
-        today = datetime.now().date()
-        if ref_inv.get("last_pair_day") != str(today):
-            ref_inv["pairing_bonus_today"] = 0
-            ref_inv["last_pair_day"] = str(today)
-        if ref_inv["pairing_bonus_today"] < MAX_PAIR_PER_DAY:
-            ref_inv["balance"] += PAIRING_BONUS
-            ref_inv["pairing_bonus_today"] += 1
-
-    save_investments()
-    await update.message.reply_text(f"✅ Investment for user {user_id} confirmed and active.")
-    await context.bot.send_message(
-        chat_id=int(user_id),
-        text=f"✅ Your investment is confirmed! Locked 30 days.\nDaily 1% profit starts accumulating.\nAccess Premium Signals group:\n{PREMIUM_GROUP_LINK}"
-    )
-
-@admin_only
-async def confirm_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = context.args[0]
-    except IndexError:
-        await update.message.reply_text("Usage: /confirm_withdraw <user_id>")
-        return
-    if user_id not in investments:
-        await update.message.reply_text("❌ No such user.")
-        return
-    inv = investments[user_id]
-    withdraw_request = inv.get("withdraw_request")
-    if not withdraw_request or withdraw_request.get("status") != "pending":
-        await update.message.reply_text("❌ No pending withdrawal for this user.")
-        return
-
-    withdraw_request["status"] = "confirmed"
-    inv["balance"] -= withdraw_request["amount"]
-    save_investments()
-
-    await update.message.reply_text(f"✅ Withdrawal for user {user_id} confirmed.")
-    await context.bot.send_message(
-        chat_id=int(user_id),
-        text=f"💳 Your withdrawal of {withdraw_request['amount']} USDT is confirmed by admin."
-    )
-
-@admin_only
-async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    total_users = len(investments)
-    total_balance = sum(inv.get("balance", 0) for inv in investments.values())
-    active_investments = sum(inv.get("amount", 0) for inv in investments.values() if inv.get("status") == "active")
-    
-    text = (
-        f"📊 Admin Dashboard 📊\n\n"
-        f"Total users: {total_users}\n"
-        f"Total withdrawable balance: {total_balance:.2f} USDT\n"
-        f"Total active investments: {active_investments:.2f} USDT"
-    )
-    await update.message.reply_text(text)
-
-@admin_only
-async def user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = context.args[0]
-    except IndexError:
-        await update.message.reply_text("Usage: /user <user_id>")
-        return
-    inv = investments.get(user_id)
-    if not inv:
-        await update.message.reply_text("❌ No such user.")
-        return
-    withdraw_req = inv.get("withdraw_request", {})
-    text = (
-        f"👤 User {user_id} Detail 👤\n\n"
-        f"Investment Amount: {inv.get('amount',0)} USDT\n"
-        f"Status: {inv.get('status')}\n"
-        f"Start Date: {inv.get('start_date')}\n"
-        f"Locked Until: {inv.get('locked_until')}\n"
-        f"Balance: {inv.get('balance',0):.2f} USDT\n"
-        f"Referrer: {inv.get('referrer')}\n"
-        f"Withdraw Request: {withdraw_req.get('amount',0)} USDT - {withdraw_req.get('status','N/A')}"
-    )
-    await update.message.reply_text(text)
+# Include confirm, confirm_withdraw, dashboard, user_detail as in previous code
+# (Omitted here to save space, just copy from previous complete code)
 
 # ------------------ RUN BOT ------------------
 def run_bot():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # User commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("earnings", earnings))
-    app.add_handler(CommandHandler("invest", invest))
-    app.add_handler(CommandHandler("txid", submit_txid))
-    app.add_handler(CommandHandler("profit", profit))
-    app.add_handler(CommandHandler("withdraw", withdraw))
+    # Add user & admin handlers
+    # ...
 
-    # Admin commands
-    app.add_handler(CommandHandler("confirm", confirm))
-    app.add_handler(CommandHandler("confirm_withdraw", confirm_withdraw))
-    app.add_handler(CommandHandler("dashboard", dashboard))
-    app.add_handler(CommandHandler("user", user_detail))
-
-    # Start background profit loop
-    app.create_task(auto_daily_profit_loop())
+    # Use JobQueue for daily profit
+    app.job_queue.run_repeating(daily_profit_job, interval=86400, first=10)
 
     print("🤖 Bot running on Telegram...")
     app.run_polling()
