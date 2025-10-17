@@ -260,7 +260,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wallet = context.args[0]
     user["pending_withdraw"] = {"amount": withdrawable, "wallet": wallet, "timestamp": datetime.utcnow().isoformat()}
     if invest_profit > 0 and user.get("investment"):
-        user["investment"]["withdrawn_profit"] = user["investment"].get("withdrawn_profit",0)+invest_profit
+        user["investment"]["withdrawn_profit"] += invest_profit
     user["balance"] = 0
     save_data()
     try:
@@ -347,11 +347,16 @@ async def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-    # Daily profit loop
+    # Start daily profit loop
     asyncio.create_task(daily_profit_loop(app))
 
     # Start polling
     await app.run_polling()
 
+# -----------------------
+# Render-safe entry
+# -----------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
