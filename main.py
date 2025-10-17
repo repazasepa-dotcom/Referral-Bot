@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -24,6 +25,10 @@ try:
 except FileNotFoundError:
     investments = {}
 
+def save_investments():
+    with open("investments.json", "w") as f:
+        json.dump(investments, f, indent=4)
+
 # ------------------ ADMIN CHECK ------------------
 def admin_only(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -32,9 +37,16 @@ def admin_only(func):
         return await func(update, context)
     return wrapper
 
-def save_investments():
-    with open("investments.json", "w") as f:
-        json.dump(investments, f, indent=4)
+# ------------------ DAILY PROFIT LOOP ------------------
+async def auto_daily_profit_loop():
+    while True:
+        for inv in investments.values():
+            if inv.get("status") == "active":
+                inv.setdefault("balance", 0)
+                inv["balance"] += inv["amount"] * DAILY_PROFIT_PERCENT
+        save_investments()
+        print("✅ Daily profit added to all active investments.")
+        await asyncio.sleep(86400)  # Wait 24 hours
 
 # ------------------ USER COMMANDS ------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -197,35 +209,30 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except IndexError:
         await update.message.reply_text("Usage: /confirm <user_id>")
         return
-
     if user_id not in investments:
         await update.message.reply_text("❌ No such user.")
         return
-
     inv = investments[user_id]
     if "txid" not in inv:
         await update.message.reply_text("❌ User has not submitted TXID yet.")
         return
 
-    # Activate investment
     inv["status"] = "active"
     inv["start_date"] = datetime.now().isoformat()
     inv["locked_until"] = (datetime.now() + timedelta(days=30)).isoformat()
     inv.setdefault("balance", 0)
 
-    # Direct referral bonus
+    # Referral bonuses
     referrer_id = inv.get("referrer")
     if referrer_id and referrer_id in investments:
         ref_inv = investments[referrer_id]
         ref_inv.setdefault("balance", 0)
         ref_inv["balance"] += REFERRAL_DIRECT_BONUS
 
-        # Pairing bonus logic
         today = datetime.now().date()
         if ref_inv.get("last_pair_day") != str(today):
             ref_inv["pairing_bonus_today"] = 0
             ref_inv["last_pair_day"] = str(today)
-
         if ref_inv["pairing_bonus_today"] < MAX_PAIR_PER_DAY:
             ref_inv["balance"] += PAIRING_BONUS
             ref_inv["pairing_bonus_today"] += 1
@@ -233,7 +240,6 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_investments()
 
     await update.message.reply_text(f"✅ Investment for user {user_id} confirmed and active.")
-
     benefits_text = (
         "🔥 **Premium Member Signals Benefits** 🔥\n\n"
         "🚀 Coin names before pump\n"
@@ -244,9 +250,9 @@ async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚀 Trade on Binance\n\n"
         f"🎯 Access Premium Signals group:\n{PREMIUM_GROUP_LINK}"
     )
-    await context.bot.send_message(chat_id=int(user_id), text=f"✅ Your investment is confirmed! Locked 30 days.\nDaily 1% profit starts accumulating.\n\n{benefits_text}")
+    await context.bot.send_message(chat_id=int(user_id),
+        text=f"✅ Your investment is confirmed! Locked 30 days.\nDaily 1% profit starts accumulating.\n\n{benefits_text}")
 
-# ------------------ OTHER ADMIN COMMANDS ------------------
 @admin_only
 async def confirm_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -266,7 +272,8 @@ async def confirm_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inv["balance"] = 0
     save_investments()
     await update.message.reply_text(f"✅ Withdrawal for user {user_id} confirmed.")
-    await context.bot.send_message(chat_id=int(user_id), text=f"✅ Your withdrawal of {req['amount']:.2f} USDT has been approved and will be sent to:\n{req['address']}")
+    await context.bot.send_message(chat_id=int(user_id),
+        text=f"✅ Your withdrawal of {req['amount']:.2f} USDT has been approved and will be sent to:\n{req['address']}")
 
 @admin_only
 async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -303,15 +310,6 @@ async def user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"📋 **User {user_id} Details:**\nStatus: {inv['status']}\nAmount: {inv['amount']}\nBalance: {inv.get('balance',0):.2f}\nReferrer: {inv.get('referrer')}\n"
     await update.message.reply_text(msg)
 
-# ------------------ DAILY PROFIT JOB ------------------
-async def daily_profit_job(context: ContextTypes.DEFAULT_TYPE):
-    for inv in investments.values():
-        if inv.get("status") == "active":
-            inv.setdefault("balance", 0)
-            inv["balance"] += inv["amount"] * DAILY_PROFIT_PERCENT
-    save_investments()
-    print("✅ Daily profit added to all active investments.")
-
 # ------------------ MAIN ------------------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -331,8 +329,8 @@ def main():
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("user", user_detail))
 
-    # Schedule daily profit
-    app.job_queue.run_repeating(daily_profit_job, interval=86400, first=10)
+    # Start async daily profit loop
+    asyncio.create_task(auto_daily_profit_loop())
 
     print("🤖 Bot running...")
     app.run_polling()
