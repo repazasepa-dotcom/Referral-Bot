@@ -11,28 +11,13 @@ from telegram.ext import (
 )
 
 # -----------------------
-# Render-safe startup
+# Logging
 # -----------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-logger.info("⚡ Starting bot... ensuring clean event loop.")
-
-try:
-    loop = asyncio.get_running_loop()
-    logger.info("✅ Found running event loop, reusing it.")
-except RuntimeError:
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    logger.info("✅ No running event loop, created new loop.")
-
-# Clear all existing tasks to prevent duplicates on redeploy
-for task in asyncio.all_tasks(loop):
-    if not task.done():
-        task.cancel()
-logger.info("🧹 Cleared all pending asyncio tasks.")
 
 # -----------------------
 # Storage
@@ -152,23 +137,35 @@ async def daily_profit_loop(app):
 # -----------------------
 # Command Handlers
 # -----------------------
-# ... All your previous handlers: start, pay, confirm, balance, stats, withdraw, invest, confirminvest, help ...
-# Use the same implementations from the last full code I sent.
+# Implement /start, /pay, /confirm, /balance, /stats, /withdraw, /invest, /confirminvest, /help
+# Use the same handlers from the previous full code
+# They include referral bonuses, investment profits, and admin notifications
 
 # -----------------------
-# Main & Run
+# Main entry point
 # -----------------------
-TOKEN = os.environ.get("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("BOT_TOKEN not set!")
+async def main():
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        raise ValueError("BOT_TOKEN not set!")
 
-app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-# Add handlers here as in previous code
+    # Add all handlers
+    # app.add_handler(...)
 
-# Start daily profit loop
-loop.create_task(daily_profit_loop(app))
+    # Start daily profit loop
+    asyncio.create_task(daily_profit_loop(app))
 
-# Run bot in already running event loop (Render-friendly)
-loop.create_task(app.run_polling())
-loop.run_forever()
+    # Run polling
+    await app.run_polling()
+
+# -----------------------
+# Run safely on Render
+# -----------------------
+try:
+    loop = asyncio.get_running_loop()
+    loop.create_task(main())
+    loop.run_forever()
+except RuntimeError:
+    asyncio.run(main())
