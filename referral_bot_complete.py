@@ -1,5 +1,6 @@
 # referral_bot_complete.py
 import logging
+import warnings
 import json
 import os
 from datetime import datetime, timedelta
@@ -9,6 +10,11 @@ from telegram.ext import (
     MessageHandler, filters
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# -----------------------
+# Suppress pkg_resources warning
+# -----------------------
+warnings.filterwarnings("ignore", category=UserWarning, module="apscheduler")
 
 # -----------------------
 # Logging
@@ -301,7 +307,213 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to notify admin: {e}")
 
 # -----------------------
-# The remaining commands:
-# /balance, /stats, /withdraw, /processwithdraw, /help, unknown
-# ... and the fixed main loop with build_polling() ...
+# Balance
 # -----------------------
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_pairing_if_needed()
+    user_id = str(update.effective_user.id)
+    user = users.get(user_id)
+    if not user:
+        await update.message.reply_text("❌ Use /start first.")
+        return
+    bal = user.get("balance", 0)
+    invest = user.get("investment_balance", 0)
+    earned = user.get("earned_from_referrals", 0)
+    await update.message.reply_text(
+        f"💰 Balance: {bal} USDT\n"
+        f"💎 Earned from referrals/profit: {earned} USDT\n"
+        f"📈 Investment balance: {invest} USDT"
+    )
+
+# -----------------------
+# Stats
+# -----------------------
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_pairing_if_needed()
+    user_id = str(update.effective_user.id)
+    user = users.get(user_id)
+    if not user:
+        await update.message.reply_text("❌ Use /start first.")
+        return
+
+    num_referrals = len(user.get("referrals", []))
+    left = user.get("left", 0)
+    right = user.get("right", 0)
+    balance_amount = user.get("balance", 0)
+    earned_from_referrals = user.get("earned_from_referrals", 0)
+    invest_balance = user.get("investment_balance", 0)
+    paid = user.get("paid", False)
+
+    msg = (
+        f"📊 **Your Stats:**\n"
+        f"Balance: {balance_amount} USDT\n"
+        f"Investment: {invest_balance} USDT\n"
+        f"Earned from referrals/profit: {earned_from_referrals} USDT\n"
+        f"Direct referrals: {num_referrals}\n"
+        f"Left pairs today: {left}\n"
+        f"Right pairs today: {right}\n"
+        f"Membership paid: {'✅' if paid else '❌'}"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# -----------------------
+# Withdraw
+# -----------------------
+async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    user = users.get(user_id)
+    if not user:
+        await update.message.reply_text("❌ Use /start first.")
+        return
+
+    balance_amount = user.get("balance", 0)
+    if balance_amount < MIN_WITHDRAW:
+        await update.message.reply_text(
+            f"Your balance is {balance_amount} USDT. Minimum withdrawal is {MIN_WITHDRAW} USDT."
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Please provide your BEP20 wallet address. Usage:\n/withdraw <wallet_address>"
+        )
+        return
+
+    wallet_address = context.args[0]
+
+    # Save pending withdrawal
+    user["pending_withdraw"] = {
+        "amount": balance_amount,
+        "wallet": wallet_address,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    save_data()
+
+    await update.message.reply_text(
+        f"✅ Withdrawal request received!\n"
+        f"Amount: {balance_amount} USDT\n"
+        f"Wallet: {wallet_address}\n"
+        "Admin will verify and process your withdrawal."
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"💰 New withdrawal request!\n"
+                f"User ID: {user_id}\n"
+                f"Amount: {balance_amount} USDT\n"
+                f"Wallet: {wallet_address}"
+            )
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify admin: {e}")
+
+# -----------------------
+# Process withdrawal (admin)
+# -----------------------
+async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Only admin can use this command.")
+        return
+
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("Usage: /processwithdraw <user_id>")
+        return
+
+    target_user_id = context.args[0]
+    user = users.get(target_user_id)
+    if not user or "pending_withdraw" not in user:
+        await update.message.reply_text("❌ No pending withdrawal for this user.")
+        return
+
+    pending = user.pop("pending_withdraw")
+    amount = pending["amount"]
+    user["balance"] -= amount
+    save_data()
+
+    try:
+        await context.bot.send_message(
+            chat_id=int(target_user_id),
+            text=(
+                f"✅ Your withdrawal request has been processed!\n"
+                f"Amount: {amount} USDT\n"
+                "Funds will arrive in your BEP20 wallet shortly."
+            )
+        )
+        await update.message.reply_text(f"✅ User {target_user_id} has been notified.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to notify user: {e}")
+
+# -----------------------
+# Help & unknown
+# -----------------------
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    is_admin = user_id == ADMIN_ID
+
+    help_text = (
+        "📌 Available Commands:\n\n"
+        "✨ /start - Register and see referral link & benefits\n"
+        "💵 /balance - Check your current balance\n"
+        "📊 /stats - View your referral stats\n"
+        "🏦 /withdraw <BEP20_wallet> - Request withdrawal (min 20 USDT)\n"
+        "💳 /pay <TXID> - Submit your payment transaction ID\n"
+        "💰 /invest <amount> - Make a new investment\n"
+        "❓ /help - Show this menu"
+    )
+
+    if is_admin:
+        help_text += (
+            "\n\n--- Admin Commands ---\n"
+            "/confirm <user_id> - Confirm user membership\n"
+            "/confirminvest <user_id> - Confirm user investment\n"
+            "/processwithdraw <user_id> - Process a withdrawal request"
+        )
+
+    await update.message.reply_text(help_text)
+
+async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Unknown command. Type /help to see available commands.")
+
+# -----------------------
+# Main startup
+# -----------------------
+if __name__ == "__main__":
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        raise ValueError("⚠️ BOT_TOKEN environment variable not set!")
+
+    # Build polling app
+    app = ApplicationBuilder().token(TOKEN).build_polling()
+
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("pay", pay))
+    app.add_handler(CommandHandler("confirm", confirm))
+    app.add_handler(CommandHandler("confirminvest", confirm_invest))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("withdraw", withdraw))
+    app.add_handler(CommandHandler("processwithdraw", process_withdraw))
+    app.add_handler(CommandHandler("invest", invest))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    # Scheduler
+    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler.add_job(add_daily_profit, 'cron', hour=0, minute=0)
+    scheduler.start()
+    logger.info("Scheduler started: Daily profit job added.")
+
+    # Send startup message to admin
+    import asyncio
+    async def send_startup_message():
+        try:
+            await app.bot.send_message(chat_id=ADMIN_ID, text="✅ Bot is live and running!")
+            logger.info("Startup message sent to admin.")
+        except Exception as e:
+            logger.error(f"Failed to send startup message: {e}")
+    asyncio.get_event_loop().create_task(send_startup_message())
+
+    logger.info("Bot started successfully with polling.")
