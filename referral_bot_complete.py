@@ -299,3 +299,9 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Failed to notify admin: {e}")
+
+# -----------------------
+# The remaining commands:
+# /balance, /stats, /withdraw, /processwithdraw, /help, unknown
+# ... and the fixed main loop with build_polling() ...
+# -----------------------
