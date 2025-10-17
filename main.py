@@ -151,6 +151,7 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"User @{update.effective_user.username} requested {amount} USDT investment."
     )
 
+# ------------------ TXID, PROFIT, WITHDRAW COMMANDS ------------------
 async def submit_txid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in investments or investments[user_id]["status"] != "pending":
@@ -311,7 +312,7 @@ async def user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 # ------------------ MAIN ------------------
-def main():
+async def main_async():
     app = ApplicationBuilder().token(TOKEN).build()
 
     # User commands
@@ -329,11 +330,11 @@ def main():
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("user", user_detail))
 
-    # Start async daily profit loop
+    # Start daily profit loop
     asyncio.create_task(auto_daily_profit_loop())
 
     print("🤖 Bot running...")
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main_async())
