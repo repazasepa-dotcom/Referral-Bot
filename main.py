@@ -4,7 +4,11 @@ import os
 import json
 import logging
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -28,13 +32,11 @@ logger = logging.getLogger(__name__)
 DATA_FILE = "users.json"
 META_FILE = "meta.json"
 
-# Admin ID (use env var if set, otherwise fallback)
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8150987682"))
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # required to run
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8150987682"))  # set in env to override
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # required
 BNB_ADDRESS = os.getenv(
-    "BNB_ADDRESS",
-    "0xC6219FFBA27247937A63963E4779e33F7930d497"
-)  # using the address you provided
+    "BNB_ADDRESS", "0xC6219FFBA27247937A63963E4779e33F7930d497"
+)  # your Mono BEP20 address
 PREMIUM_GROUP = os.getenv("PREMIUM_GROUP", "https://t.me/+ra4eSwIYWukwMjRl")
 
 MEMBERSHIP_FEE = 50
@@ -44,7 +46,7 @@ MAX_PAIRS_PER_DAY = 10
 MIN_WITHDRAW = 20
 INVEST_MIN = 50
 INVEST_LOCK_DAYS = 30
-DAILY_PROFIT_RATE = 0.01  # 1% daily (as decimal)
+DAILY_PROFIT_RATE = 0.01  # 1% daily as decimal
 
 # -----------------------
 # Storage
@@ -68,9 +70,11 @@ def save_data():
     with open(DATA_FILE, "w") as f:
         json.dump(users, f, indent=2)
 
+
 def save_meta():
     with open(META_FILE, "w") as f:
         json.dump(meta, f, indent=2)
+
 
 def reset_pairing_if_needed():
     today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -82,6 +86,7 @@ def reset_pairing_if_needed():
         save_data()
         save_meta()
         logger.info("🌞 Daily pairing counts reset.")
+
 
 def add_referral_bonus(referrer_id_str):
     """Give referrer the direct + pairing bonuses."""
@@ -98,6 +103,7 @@ def add_referral_bonus(referrer_id_str):
         ref["balance"] += PAIRING_BONUS
         ref["earned_from_referrals"] += PAIRING_BONUS
 
+
 def distribute_daily_profit():
     now = datetime.utcnow()
     distributed_count = 0
@@ -113,6 +119,7 @@ def distribute_daily_profit():
     save_data()
     logger.info(f"💹 Distributed daily profit to {distributed_count} investors.")
     return distributed_count
+
 
 # -----------------------
 # Command Handlers
@@ -133,7 +140,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "txid": None,
             "pending_investment": None,
             "investment": None,
-            "pending_withdraw": None
+            "pending_withdraw": None,
+            # track if referrer was given membership reward for this user
+            "membership_referrer_rewarded": False,
         }
         if context.args:
             ref = context.args[0]
@@ -156,8 +165,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 To access, pay *{MEMBERSHIP_FEE} USDT* (BEP20) to:\n`{BNB_ADDRESS}` (in Mono)\n\n"
         f"After payment submit TXID: `/pay <TXID>`\n\n"
         f"🔗 Your referral link:\n{referral_link}",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = update.effective_user.id == ADMIN_ID
@@ -178,9 +188,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += (
             "\n--- Admin ---\n"
             "• /distribute - Distribute daily 1% profit to active investments\n"
-            "Admin will also receive inline Confirm/Reject buttons when users submit investments."
+            "Admin will also receive inline Confirm/Reject buttons when users submit payments/investments."
         )
     await update.message.reply_text(text, parse_mode="Markdown")
+
 
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -195,8 +206,9 @@ async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
+
 # -----------------------
-# Membership payment flow
+# Membership payment flow (user submits)
 # -----------------------
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -204,19 +216,46 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /pay <TXID>")
         return
     txid = context.args[0]
-    users.setdefault(user_id, {})["txid"] = txid
+    users.setdefault(user_id, {})
+    users[user_id]["txid"] = txid
     save_data()
+
+    # Build inline buttons for admin to confirm or reject payment
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Confirm Payment", callback_data=f"confirm_pay:{user_id}"
+                ),
+                InlineKeyboardButton(
+                    "❌ Reject Payment", callback_data=f"reject_pay:{user_id}"
+                ),
+            ]
+        ]
+    )
+
+    # Notify admin
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"💳 New membership TXID submitted\nUser ID: {user_id}\nTXID: `{txid}`",
-            parse_mode="Markdown"
+            text=(
+                f"💳 *New Membership Payment Submitted*\n\n"
+                f"👤 User: {update.effective_user.full_name} (ID: {user_id})\n"
+                f"🔗 TXID: `{txid}`\n"
+            ),
+            parse_mode="Markdown",
+            reply_markup=keyboard,
         )
     except Exception:
-        logger.exception("Failed to notify admin about payment.")
-    await update.message.reply_text("✅ TXID submitted. Admin will verify your payment soon.")
+        logger.exception("Failed to notify admin about membership payment.")
 
-async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "✅ TXID submitted. Admin will verify your payment soon.", parse_mode="Markdown"
+    )
+
+
+async def confirm_payment_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Backwards-compatible admin command (still present): /confirm <user_id>
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
@@ -231,18 +270,29 @@ async def confirm_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.get("paid"):
         await update.message.reply_text("✅ User already confirmed.")
         return
+    # confirm
     u["paid"] = True
+    # mark membership_referrer_rewarded to avoid double-crediting via callback later
+    if not u.get("membership_referrer_rewarded"):
+        ref = u.get("referrer")
+        if ref:
+            add_referral_bonus(ref)
+            u["membership_referrer_rewarded"] = True
     save_data()
-    ref = u.get("referrer")
-    if ref:
-        add_referral_bonus(ref)
-        save_data()
+    # send premium join button to user
     try:
-        await context.bot.send_message(chat_id=int(target),
-            text="✅ Your membership payment has been confirmed! Welcome to premium.")
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("💎 Join Premium Group", url=PREMIUM_GROUP)]]
+        )
+        await context.bot.send_message(
+            chat_id=int(target),
+            text="✅ Your membership payment has been confirmed! Welcome to premium.",
+            reply_markup=keyboard,
+        )
     except Exception:
         logger.exception("Failed to notify user after membership confirm.")
     await update.message.reply_text(f"✅ User {target} marked as paid and referral bonuses processed.")
+
 
 # -----------------------
 # Investment submission (user)
@@ -252,7 +302,7 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.message.reply_text(
             f"💹 Usage: /invest <amount> <TXID>\nMinimum: {INVEST_MIN} USDT\nDeposit to: `{BNB_ADDRESS}` (in Mono)",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
     try:
@@ -269,15 +319,19 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users[user_id]["pending_investment"] = {
         "amount": amount,
         "txid": txid,
-        "submitted_at": datetime.utcnow().isoformat()
+        "submitted_at": datetime.utcnow().isoformat(),
     }
     save_data()
 
     keyboard = InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("✅ Confirm Investment", callback_data=f"confirm_invest:{user_id}"),
-                InlineKeyboardButton("❌ Reject Investment", callback_data=f"reject_invest:{user_id}"),
+                InlineKeyboardButton(
+                    "✅ Confirm Investment", callback_data=f"confirm_invest:{user_id}"
+                ),
+                InlineKeyboardButton(
+                    "❌ Reject Investment", callback_data=f"reject_invest:{user_id}"
+                ),
             ]
         ]
     )
@@ -291,42 +345,95 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔗 TXID: `{txid}`\n"
             ),
             parse_mode="Markdown",
-            reply_markup=keyboard
+            reply_markup=keyboard,
         )
     except Exception:
         logger.exception("Failed to notify admin of investment.")
 
     await update.message.reply_text(
         "✅ Investment submitted and is pending admin verification. You will be notified when confirmed.",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
 
+
 # -----------------------
-# CallbackQuery handler (admin confirms/rejects)
+# CallbackQuery handler (admin confirms/rejects for payments and investments)
 # -----------------------
-async def investment_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    # Only admin allowed to press these inline action buttons
     if query.from_user.id != ADMIN_ID:
         await query.edit_message_text("❌ You are not authorized to perform this action.")
         return
 
-    data = query.data
+    data = query.data  # e.g., "confirm_invest:12345" or "reject_pay:12345"
     if not data or ":" not in data:
         await query.edit_message_text("❌ Invalid action.")
         return
 
     action, user_id = data.split(":", 1)
     user = users.get(user_id)
-    if not user or "pending_investment" not in user:
-        await query.edit_message_text("❌ No pending investment found for that user.")
+    if not user:
+        await query.edit_message_text("❌ User not found in DB.")
         return
 
-    pending = user.pop("pending_investment")
-    save_data()
+    # --- Payment confirm/reject ---
+    if action == "confirm_pay":
+        txid = user.get("txid")
+        # mark paid
+        user["paid"] = True
+        # reward referrer for membership if not yet rewarded
+        if not user.get("membership_referrer_rewarded"):
+            ref = user.get("referrer")
+            if ref:
+                add_referral_bonus(ref)
+                user["membership_referrer_rewarded"] = True
+        save_data()
+        await query.edit_message_text(f"✅ Payment for user {user_id} confirmed (TXID: {txid}).")
 
+        # send user premium join inline button & message
+        try:
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("💎 Join Premium Group", url=PREMIUM_GROUP)]]
+            )
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=(
+                    "✅ *Your membership payment has been confirmed!*\n\n"
+                    "🎉 Welcome to the Premium Members Signals group 💎\n"
+                    "Tap the button below to join."
+                ),
+                parse_mode="Markdown",
+                reply_markup=keyboard,
+            )
+        except Exception:
+            logger.exception("Failed to notify user after payment confirm.")
+        return
+
+    if action == "reject_pay":
+        txid = user.get("txid")
+        # optionally keep txid, but notify user
+        await query.edit_message_text(f"❌ Payment for user {user_id} rejected (TXID: {txid}).")
+        try:
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=(
+                    f"❌ Your membership payment (TXID: {txid}) was rejected by admin.\n"
+                    "If you paid, please contact the admin with proof."
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to notify user after payment rejection.")
+        return
+
+    # --- Investment confirm/reject ---
     if action == "confirm_invest":
+        if "pending_investment" not in user:
+            await query.edit_message_text("❌ No pending investment for this user.")
+            return
+        pending = user.pop("pending_investment")
         amount = pending["amount"]
         now_iso = datetime.utcnow().isoformat()
         lock_until_iso = (datetime.utcnow() + timedelta(days=INVEST_LOCK_DAYS)).isoformat()
@@ -335,24 +442,25 @@ async def investment_callback_handler(update: Update, context: ContextTypes.DEFA
             "start_date": now_iso,
             "active": True,
             "lock_until": lock_until_iso,
-            "referrer_rewarded": False  # track whether we credited referrer for this investment
+            "referrer_rewarded_for_invest": False,
         }
         save_data()
         await query.edit_message_text(f"✅ Investment for user {user_id} confirmed (Amount: {amount} USDT).")
 
-        # Credit referrer when investment is confirmed (if exists and not yet credited)
+        # credit referrer for investment (if exists and not already credited for this invest)
         ref = user.get("referrer")
-        if ref:
-            # ensure we don't double-credit: check flag
-            if not user["investment"].get("referrer_rewarded"):
-                add_referral_bonus(ref)
-                user["investment"]["referrer_rewarded"] = True
-                save_data()
+        if ref and not user["investment"].get("referrer_rewarded_for_invest"):
+            add_referral_bonus(ref)
+            user["investment"]["referrer_rewarded_for_invest"] = True
+            save_data()
 
-        # notify user, include premium group link and lock end date
+        # notify user with premium group link and lock-end date
         try:
             lock_until_dt = datetime.fromisoformat(lock_until_iso)
             lock_until_str = lock_until_dt.strftime("%Y-%m-%d %H:%M UTC")
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("💎 Join Premium Group", url=PREMIUM_GROUP)]]
+            )
             await context.bot.send_message(
                 chat_id=int(user_id),
                 text=(
@@ -360,13 +468,21 @@ async def investment_callback_handler(update: Update, context: ContextTypes.DEFA
                     f"💹 Amount: {amount:.2f} USDT\n"
                     f"🔒 Locked until: {lock_until_str}\n"
                     f"📈 You will earn *1% daily* added to your balance during the lock period.\n\n"
-                    f"💎 Join the Premium Members Signals group:\n{PREMIUM_GROUP}"
+                    f"💎 Tap below to join the Premium Members Signals group:"
                 ),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=keyboard,
             )
         except Exception:
             logger.exception("Failed to notify user after confirming investment.")
-    elif action == "reject_invest":
+        return
+
+    if action == "reject_invest":
+        if "pending_investment" not in user:
+            await query.edit_message_text("❌ No pending investment for this user.")
+            return
+        pending = user.pop("pending_investment")
+        save_data()
         await query.edit_message_text(f"❌ Investment for user {user_id} has been rejected.")
         try:
             await context.bot.send_message(
@@ -375,12 +491,14 @@ async def investment_callback_handler(update: Update, context: ContextTypes.DEFA
                     f"❌ Your investment request of {pending['amount']:.2f} USDT was rejected by admin.\n"
                     "If you paid and believe this is an error, please contact the admin."
                 ),
-                parse_mode="Markdown"
             )
         except Exception:
             logger.exception("Failed to notify user after rejecting investment.")
-    else:
-        await query.edit_message_text("❌ Unknown action.")
+        return
+
+    # default fallback
+    await query.edit_message_text("❌ Unknown action.")
+
 
 # -----------------------
 # Balance & Stats
@@ -412,6 +530,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         invest_info = "\n💹 No active investment."
 
     await update.message.reply_text(f"💰 Balance: {bal:.2f} USDT{invest_info}", parse_mode="Markdown")
+
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reset_pairing_if_needed()
@@ -447,8 +566,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💰 Balance: {bal:.2f} USDT\n"
         f"🏷️ Membership paid: {'✅' if paid else '❌'}\n"
         f"{invest_info}",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
     )
+
 
 # -----------------------
 # Withdraw flow
@@ -473,10 +593,11 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"💰 New withdrawal request\nUser: {user_id}\nAmount: {bal:.2f} USDT\nWallet: {wallet}"
+            text=f"💰 New withdrawal request\nUser: {user_id}\nAmount: {bal:.2f} USDT\nWallet: {wallet}",
         )
     except Exception:
         logger.exception("Failed to notify admin of withdrawal.")
+
 
 async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -500,6 +621,7 @@ async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         logger.exception("Failed to notify user after processing withdraw.")
 
+
 # -----------------------
 # Admin distribute handler
 # -----------------------
@@ -510,11 +632,13 @@ async def distribute_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     count = distribute_daily_profit()
     await update.message.reply_text(f"✅ Distributed daily profit to {count} investors.")
 
+
 # -----------------------
 # Unknown command
 # -----------------------
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Unknown command. Use /help to see available commands.")
+
 
 # -----------------------
 # Main boot
@@ -535,18 +659,23 @@ def main():
     app.add_handler(CommandHandler("withdraw", withdraw))
 
     # Admin Commands
-    app.add_handler(CommandHandler("confirm", confirm_payment))  # confirm membership
+    app.add_handler(CommandHandler("confirm", confirm_payment_manual))  # optional manual confirm
     app.add_handler(CommandHandler("processwithdraw", process_withdraw))
     app.add_handler(CommandHandler("distribute", distribute_handler))
 
-    # Callback queries for inline invest confirm/reject
-    app.add_handler(CallbackQueryHandler(investment_callback_handler, pattern="^(confirm_invest|reject_invest):"))
+    # Callback queries for inline confirm/reject buttons (payments & investments)
+    app.add_handler(
+        CallbackQueryHandler(
+            callback_query_handler, pattern="^(confirm_invest|reject_invest|confirm_pay|reject_pay):"
+        )
+    )
 
-    # Unknown
+    # Unknown fallback
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
     logger.info("🤖 Bot starting...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
