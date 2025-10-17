@@ -52,7 +52,7 @@ MEMBERSHIP_FEE = 50
 BNB_ADDRESS = "0xC6219FFBA27247937A63963E4779e33F7930d497"
 PREMIUM_GROUP = "https://t.me/+ra4eSwIYWukwMjRl"
 MIN_WITHDRAW = 20
-DAILY_PROFIT_PERCENT = 1  # 1% daily profit
+DAILY_PROFIT_PERCENT = 1
 INVEST_LOCK_DAYS = 30
 
 # -----------------------
@@ -78,7 +78,7 @@ def reset_pairing_if_needed():
         logger.info("Daily pairing counts reset.")
 
 def add_daily_profit():
-    for user_id, user in users.items():
+    for user in users.values():
         if user.get("investment_confirmed"):
             profit = round(user["investment_balance"] * DAILY_PROFIT_PERCENT / 100, 2)
             user["investment_balance"] += profit
@@ -138,23 +138,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # -----------------------
-# /pay command for membership
+# /pay command
 # -----------------------
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
     if not user:
-        await update.message.reply_text("❌ You are not registered yet. Use /start first.")
+        await update.message.reply_text("❌ Use /start first")
         return
     if user.get("paid"):
-        await update.message.reply_text("✅ Already confirmed as paid.")
+        await update.message.reply_text("✅ Already confirmed as paid")
         return
     if not context.args or len(context.args) != 1:
-        await update.message.reply_text("Usage: /pay <transaction_id>")
+        await update.message.reply_text("Usage: /pay <TXID>")
         return
+
     txid = context.args[0]
     user["txid"] = txid
     save_data()
+
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -162,6 +164,7 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Admin notification failed: {e}")
+
     await update.message.reply_text("✅ TXID submitted. Admin will verify soon.")
 
 # -----------------------
@@ -171,14 +174,16 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
     if not user:
-        await update.message.reply_text("❌ Register first with /start")
+        await update.message.reply_text("❌ Use /start first")
         return
     if not context.args or len(context.args) != 1:
-        await update.message.reply_text("Usage: /invest <transaction_id>")
+        await update.message.reply_text("Usage: /invest <TXID>")
         return
+
     txid = context.args[0]
     user["investment_txid"] = txid
     save_data()
+
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -186,10 +191,11 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Admin notification failed: {e}")
+
     await update.message.reply_text("✅ Investment TXID submitted. Admin will confirm.")
 
 # -----------------------
-# Admin confirms investment
+# /confirminvest command
 # -----------------------
 async def confirm_invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -198,14 +204,17 @@ async def confirm_invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("Usage: /confirminvest <user_id>")
         return
+
     target_user_id = context.args[0]
     user = users.get(target_user_id)
     if not user or not user.get("investment_txid"):
         await update.message.reply_text("❌ No investment TXID submitted")
         return
+
     user["investment_confirmed"] = True
     user["investment_date"] = datetime.utcnow().isoformat()
     save_data()
+
     await update.message.reply_text(f"✅ Investment confirmed for {target_user_id}")
 
 # -----------------------
@@ -215,7 +224,7 @@ async def myinvestment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     user = users.get(user_id)
     if not user:
-        await update.message.reply_text("❌ Register first with /start")
+        await update.message.reply_text("❌ Use /start first")
         return
     balance = user.get("investment_balance", 0)
     profit = user.get("profit_earned", 0)
@@ -224,11 +233,6 @@ async def myinvestment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📈 Total Profit: {profit} USDT\n"
         f"🔒 Locked for {INVEST_LOCK_DAYS} days after deposit"
     )
-
-# -----------------------
-# Admin /confirm and /processwithdraw (same as before)
-# -----------------------
-# (You can copy your existing /confirm, /withdraw, /processwithdraw handlers here)
 
 # -----------------------
 # /balance command
@@ -242,7 +246,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     bal = user.get("balance", 0)
     earned = user.get("earned_from_referrals", 0)
-    await update.message.reply_text(f"💰 Your balance: {bal} USDT\n💎 Earned from referrals: {earned} USDT")
+    await update.message.reply_text(f"💰 Balance: {bal} USDT\n💎 Earned from referrals: {earned} USDT")
 
 # -----------------------
 # /help command
@@ -254,7 +258,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📌 Commands:\n"
         "/start - Register & get referral link\n"
         "/balance - Check balance\n"
-        "/stats - View stats\n"
         "/myinvestment - Investment summary\n"
         "/withdraw <BEP20> - Request withdrawal\n"
         "/pay <TXID> - Membership payment\n"
@@ -283,7 +286,7 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Command handlers
+    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("invest", invest))
@@ -299,4 +302,5 @@ if __name__ == "__main__":
     scheduler.add_job(add_daily_profit, 'cron', hour=0, minute=5)
     scheduler.start()
 
+    # Run bot
     app.run_polling()
