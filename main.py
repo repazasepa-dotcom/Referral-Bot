@@ -1,469 +1,295 @@
-import logging
 import json
 import os
+import logging
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+    ApplicationBuilder, CommandHandler, ContextTypes
 )
 
 # -----------------------
-# Logging
+# CONFIGURATION
+# -----------------------
+DATA_FILE = "bot_data.json"
+ADMIN_ID = 123456789  # Replace with your Telegram user ID
+BNB_ADDRESS = "0xYourUSDTBEP20AddressHere"
+INVEST_LOCK_DAYS = 30
+MIN_INVEST = 50
+MIN_WITHDRAW = 20
+
+# -----------------------
+# LOGGING
 # -----------------------
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # -----------------------
-# Storage Files
+# UTILITIES
 # -----------------------
-DATA_FILE = "users.json"
-META_FILE = "meta.json"
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-# -----------------------
-# Load Data
-# -----------------------
-if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "r") as f:
-        users = json.load(f)
-else:
-    users = {}
-
-if os.path.exists(META_FILE):
-    with open(META_FILE, "r") as f:
-        meta = json.load(f)
-else:
-    meta = {"last_reset": None}
-
-# -----------------------
-# Constants
-# -----------------------
-ADMIN_ID = 8150987682  # your Telegram ID
-DIRECT_BONUS = 20
-PAIRING_BONUS = 5
-MAX_PAIRS_PER_DAY = 10
-MEMBERSHIP_FEE = 50
-BNB_ADDRESS = "0xC6219FFBA27247937A63963E4779e33F7930d497"
-PREMIUM_GROUP = "https://t.me/+ra4eSwIYWukwMjRl"
-MIN_WITHDRAW = 20
-MIN_INVEST = 50
-LOCK_DAYS = 30
-DAILY_PROFIT_PERCENT = 1  # 1% daily
-
-# -----------------------
-# Helper Functions
-# -----------------------
 def save_data():
     with open(DATA_FILE, "w") as f:
-        json.dump(users, f)
+        json.dump(users, f, indent=2)
 
-def save_meta():
-    with open(META_FILE, "w") as f:
-        json.dump(meta, f)
-
-def reset_pairing_if_needed():
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    if meta.get("last_reset") != today:
-        for user in users.values():
-            user["left"] = 0
-            user["right"] = 0
-        meta["last_reset"] = today
-        save_data()
-        save_meta()
-        logger.info("✅ Daily pairing counts reset.")
+users = load_data()
 
 # -----------------------
-# Commands
+# START Command
 # -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reset_pairing_if_needed()
     user_id = str(update.effective_user.id)
-
     if user_id not in users:
+        ref = context.args[0] if context.args else None
         users[user_id] = {
-            "referrer": None,
-            "balance": 0,
-            "earned_from_referrals": 0,
-            "left": 0,
-            "right": 0,
-            "referrals": [],
+            "ref": ref,
             "paid": False,
-            "txid": None,
-            "investment": None
+            "balance": 0,
+            "investment": {},
+            "referrals": []
         }
-
-        if context.args:
-            ref_id = context.args[0]
-            if ref_id in users and ref_id != user_id:
-                users[user_id]["referrer"] = ref_id
-                users[ref_id].setdefault("referrals", []).append(user_id)
-
-    save_data()
-
-    referral_link = f"https://t.me/{context.bot.username}?start={user_id}"
-
-    benefits_text = (
-        "🔥 *Premium Membership Benefits* 🔥\n\n"
-        "🚀 Get coin names before pump\n"
-        "📈 Buy & sell guidance\n"
-        "💰 2-5 daily trading signals\n"
-        "🤖 Auto-trading bot access\n"
-        "🎯 1–3 exclusive premium signals daily\n\n"
-    )
+        if ref and ref in users:
+            users[ref]["referrals"].append(user_id)
+        save_data()
 
     await update.message.reply_text(
-        f"{benefits_text}"
-        f"💳 To access, pay *{MEMBERSHIP_FEE} USDT* (BEP20) to:\n`{BNB_ADDRESS}`\n\n"
-        f"📨 Then send `/pay <TXID>` after payment.\n\n"
-        f"🎁 Your referral link:\n{referral_link}",
+        "👋 Welcome to *Auto-Trading Bot*!\n\n"
+        "💼 Earn daily profits through our auto-trading system and referral bonuses.\n"
+        "💳 To join premium and start earning, pay 50 USDT to:\n"
+        f"`{BNB_ADDRESS}` (BEP20)\n\n"
+        "Then submit your TXID using /pay <txid>.\n\n"
+        f"📢 Your referral link:\nhttps://t.me/{context.bot.username}?start={user_id}",
         parse_mode="Markdown"
     )
 
 # -----------------------
-# /pay Command
+# PAY Command
 # -----------------------
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    user = users.get(user_id)
-
-    if not user:
-        await update.message.reply_text("❌ You are not registered. Use /start first.")
+    if len(context.args) < 1:
+        await update.message.reply_text("⚠️ Please provide your transaction ID (TXID).\nUsage: /pay <txid>")
         return
-
-    if user.get("paid"):
-        await update.message.reply_text("✅ You already have premium access.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /pay <transaction_id>")
-        return
-
     txid = context.args[0]
-    user["txid"] = txid
+    users[user_id]["txid"] = txid
     save_data()
-
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"💳 *New Payment Submitted!*\nUser ID: {user_id}\nTXID: `{txid}`",
-        parse_mode="Markdown"
-    )
-
-    await update.message.reply_text("✅ TXID submitted. Admin will verify your payment soon.")
+    await update.message.reply_text("✅ TXID received! Please wait for admin confirmation.")
 
 # -----------------------
-# /confirm Command (Admin)
-# -----------------------
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ You’re not authorized.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /confirm <user_id>")
-        return
-
-    uid = context.args[0]
-    user = users.get(uid)
-    if not user:
-        await update.message.reply_text("❌ User not found.")
-        return
-
-    user["paid"] = True
-    save_data()
-
-    ref_id = user.get("referrer")
-    if ref_id:
-        users[ref_id]["balance"] += DIRECT_BONUS
-        users[ref_id]["earned_from_referrals"] += DIRECT_BONUS
-
-    save_data()
-
-    await update.message.reply_text(
-        f"✅ User {uid} confirmed as paid.\n"
-        f"💸 Referral bonus distributed.\n\n"
-        f"🔗 Premium access: {PREMIUM_GROUP}"
-    )
-
-# -----------------------
-# /invest Command
+# INVEST Command
 # -----------------------
 async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    user = users.get(user_id)
-
-    if not user:
-        await update.message.reply_text("❌ You are not registered. Use /start first.")
-        return
-
     if len(context.args) < 2:
-        await update.message.reply_text(
-            "💹 Usage: `/invest <amount> <TXID>`\n\n"
-            f"💰 Minimum: {MIN_INVEST} USDT\n"
-            f"📥 Send to BEP20 address:\n`{BNB_ADDRESS}`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("💹 Usage: /invest <amount> <txid>")
         return
-
     amount = float(context.args[0])
+    txid = context.args[1]
+
     if amount < MIN_INVEST:
-        await update.message.reply_text(f"❌ Minimum investment is {MIN_INVEST} USDT.")
+        await update.message.reply_text(f"⚠️ Minimum investment is {MIN_INVEST} USDT.")
         return
 
-    txid = context.args[1]
-    user["pending_investment"] = {"amount": amount, "txid": txid}
+    users[user_id]["investment"] = {
+        "amount": amount,
+        "txid": txid,
+        "paid": False,
+        "start_date": None
+    }
     save_data()
 
-    await update.message.reply_text("✅ Investment TXID submitted! Admin will verify soon.")
-
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=(
-            f"💰 *New Investment Submitted!*\n"
-            f"👤 User ID: {user_id}\n💵 Amount: {amount} USDT\n🔗 TXID: `{txid}`"
-        ),
+    await update.message.reply_text(
+        f"📩 Investment request submitted!\n"
+        f"💰 Amount: {amount} USDT\n"
+        f"🔗 TXID: `{txid}`\n"
+        f"⏳ Waiting for admin confirmation.",
         parse_mode="Markdown"
     )
 
 # -----------------------
-# /confirm_invest (Admin)
+# CONFIRM INVEST (Admin)
 # -----------------------
 async def confirm_invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Unauthorized.")
         return
-
-    if not context.args:
+    if len(context.args) < 1:
         await update.message.reply_text("Usage: /confirm_invest <user_id>")
         return
 
-    uid = context.args[0]
-    user = users.get(uid)
-    if not user or "pending_investment" not in user:
-        await update.message.reply_text("❌ No pending investment for this user.")
+    user_id = context.args[0]
+    if user_id not in users or "investment" not in users[user_id]:
+        await update.message.reply_text("User or investment not found.")
         return
 
-    invest = user.pop("pending_investment")
-    amount = invest["amount"]
-
-    user["investment"] = {
-        "amount": amount,
-        "start_date": datetime.utcnow().isoformat(),
-        "lock_until": (datetime.utcnow() + timedelta(days=LOCK_DAYS)).isoformat(),
-        "active": True,
-    }
+    users[user_id]["investment"]["paid"] = True
+    users[user_id]["investment"]["start_date"] = datetime.utcnow().isoformat()
     save_data()
 
-    await update.message.reply_text(f"✅ Investment confirmed for user {uid}.")
-    await context.bot.send_message(
-        chat_id=int(uid),
-        text=(
-            f"🎉 Your investment of {amount} USDT has been confirmed!\n"
-            f"🔒 Locked for {LOCK_DAYS} days.\n"
-            f"💰 You’ll earn 1% daily profit to your balance!"
-        )
-    )
+    await update.message.reply_text(f"✅ Investment confirmed for user {user_id}.")
+    await context.bot.send_message(chat_id=int(user_id),
+        text="🎉 Your investment is confirmed!\n"
+             "💹 You’ll earn 1% profit daily for 30 days.\n"
+             "🔒 Investment is now locked.")
 
 # -----------------------
-# /distribute (Admin)
-# -----------------------
-def distribute_daily_profit():
-    now = datetime.utcnow()
-    count = 0
-    for user in users.values():
-        invest = user.get("investment")
-        if invest and invest["active"]:
-            start = datetime.fromisoformat(invest["start_date"])
-            if now >= start + timedelta(days=1):
-                profit = invest["amount"] * DAILY_PROFIT_PERCENT / 100
-                user["balance"] += profit
-                count += 1
-    save_data()
-    return count
-
-async def distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    count = distribute_daily_profit()
-    await update.message.reply_text(f"✅ Distributed 1% profit to {count} investors!")
-
-# -----------------------
-# /balance Command
+# BALANCE Command
 # -----------------------
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    user = users.get(user_id)
-
-    if not user:
-        await update.message.reply_text("❌ You are not registered.")
-        return
-
+    user = users.get(user_id, {})
+    invest = user.get("investment", {})
     bal = user.get("balance", 0)
-    invest_info = user.get("investment")
 
-    if invest_info:
-        lock_until = datetime.fromisoformat(invest_info["lock_until"])
-        days_left = (lock_until - datetime.utcnow()).days
-        inv_text = (
-            f"\n💹 Active Investment: {invest_info['amount']} USDT"
-            f"\n🔒 Locked for {days_left} more days"
+    if invest.get("paid"):
+        start_date = datetime.fromisoformat(invest["start_date"])
+        unlock_date = start_date + timedelta(days=INVEST_LOCK_DAYS)
+        days_left = max((unlock_date - datetime.utcnow()).days, 0)
+        invest_text = (
+            f"💹 Investment: {invest['amount']:.2f} USDT\n"
+            f"🔒 Locked for {INVEST_LOCK_DAYS} days\n"
+            f"🕒 {days_left} days remaining"
         )
+    elif invest.get("amount"):
+        invest_text = f"💹 Pending Investment: {invest['amount']} USDT (awaiting admin confirmation)"
     else:
-        inv_text = "\n💹 No active investment"
+        invest_text = "💹 No active investment."
 
     await update.message.reply_text(
-        f"💰 Balance: {bal:.2f} USDT{inv_text}", parse_mode="Markdown"
+        f"💰 Balance: {bal:.2f} USDT\n{invest_text}"
     )
 
 # -----------------------
-# /stats Command
+# STATS Command
 # -----------------------
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reset_pairing_if_needed()
     user_id = str(update.effective_user.id)
-    user = users.get(user_id)
-    if not user:
-        await update.message.reply_text("❌ Not registered. Use /start first.")
-        return
-
-    num_referrals = len(user.get("referrals", []))
-    earned_from_referrals = user.get("earned_from_referrals", 0)
-    balance_amount = user.get("balance", 0)
+    user = users.get(user_id, {})
+    refs = len(user.get("referrals", []))
+    balance = user.get("balance", 0)
+    invest = user.get("investment", {})
     paid = user.get("paid", False)
 
-    invest_info = ""
-    if user.get("investment"):
-        inv = user["investment"]
-        lock_until = datetime.fromisoformat(inv["lock_until"])
-        days_left = (lock_until - datetime.utcnow()).days
-        invest_info = (
-            f"\n💹 Investment: {inv['amount']} USDT"
-            f"\n🔒 Locked for {days_left} more days"
-        )
+    if invest.get("paid"):
+        start = datetime.fromisoformat(invest["start_date"])
+        unlock = start + timedelta(days=INVEST_LOCK_DAYS)
+        left = max((unlock - datetime.utcnow()).days, 0)
+        invest_info = f"💹 Investment: {invest['amount']} USDT\n🔒 Locked: {INVEST_LOCK_DAYS} days\n🕒 {left} days left"
+    else:
+        invest_info = "💹 No confirmed investment yet."
 
     await update.message.reply_text(
         f"📊 Your Stats:\n\n"
-        f"👥 Referrals: {num_referrals}\n"
-        f"💎 Earned from Referrals: {earned_from_referrals:.2f} USDT\n"
-        f"💰 Balance: {balance_amount:.2f} USDT\n"
-        f"🏦 Membership Paid: {'✅ Yes' if paid else '❌ No'}\n"
-        f"{invest_info}",
-        parse_mode="Markdown"
+        f"👥 Referrals: {refs}\n"
+        f"💰 Balance: {balance:.2f} USDT\n"
+        f"🏦 Premium: {'✅ Yes' if paid else '❌ No'}\n"
+        f"{invest_info}"
     )
 
 # -----------------------
-# /faq Command
+# WITHDRAW Command
+# -----------------------
+async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if len(context.args) < 1:
+        await update.message.reply_text("💸 Usage: /withdraw <wallet_address>")
+        return
+    wallet = context.args[0]
+    user = users.get(user_id, {})
+    if user.get("balance", 0) < MIN_WITHDRAW:
+        await update.message.reply_text(f"⚠️ Minimum withdrawal is {MIN_WITHDRAW} USDT.")
+        return
+    await update.message.reply_text(f"✅ Withdrawal request sent!\n💼 Wallet: `{wallet}`", parse_mode="Markdown")
+
+# -----------------------
+# FAQ Command
 # -----------------------
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📚 *Frequently Asked Questions* 💬\n\n"
         "💹 *Auto-Trading Investment Feature*\n\n"
-        "🚀 What it is:\n"
-        "Invest USDT with the bot to join an *auto-trading system*.\n"
-        "You earn **1% profit daily** once confirmed by admin!\n\n"
-        "⚙️ *How it works:*\n"
-        f"1️⃣ Minimum investment: {MIN_INVEST} USDT\n"
-        f"2️⃣ Send USDT to: `{BNB_ADDRESS}` (BEP20)\n"
-        "3️⃣ Submit your TXID using `/invest <amount> <txid>`\n"
-        "4️⃣ Admin confirms your investment\n"
-        f"5️⃣ Locked for {LOCK_DAYS} days — cannot withdraw early\n"
-        "6️⃣ Earn 1% daily profit to your withdrawable balance 💸\n\n"
-        "🎁 *Referral Bonuses:*\n"
-        "Earn referral rewards each time your friends join or invest!\n\n"
-        "💡 *Example:*\n"
-        "Invest 100 USDT → Earn 1 USDT per day 💰"
+        "🚀 Invest USDT to join auto-trading and earn *1% profit daily* once confirmed by admin!\n\n"
+        f"💳 Deposit to: `{BNB_ADDRESS}` (BEP20)\n"
+        "📥 Then use `/invest <amount> <txid>` to submit your transaction.\n\n"
+        "🔒 Investments are locked for 30 days.\n"
+        "💰 Profits (1% daily) go straight to your withdrawable balance!\n"
+        "🎁 You also earn referral bonuses when others join using your link!"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 # -----------------------
-# /withdraw Command
+# HELP Command
 # -----------------------
-async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    user = users.get(user_id)
-    if not user:
-        await update.message.reply_text("❌ You are not registered.")
-        return
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🤖 *Bot Commands Overview*\n\n"
+        "💬 General:\n"
+        "• /start - Start & get your referral link\n"
+        "• /faq - Learn how to earn\n"
+        "• /help - Show all commands\n\n"
+        "💰 Earning:\n"
+        "• /pay <txid> - Confirm membership payment\n"
+        "• /invest <amount> <txid> - Invest (min 50 USDT)\n"
+        "• /balance - View balance & lock info\n"
+        "• /stats - Check investment & referrals\n"
+        "• /withdraw <wallet> - Request withdrawal\n\n"
+        "🎁 Referral:\n"
+        "Invite friends using your link from /start and earn rewards!\n\n"
+        "🧑‍💼 Contact admin for payment or support help."
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
-    balance = user.get("balance", 0)
-    if balance < MIN_WITHDRAW:
-        await update.message.reply_text(
-            f"❌ Minimum withdrawal is {MIN_WITHDRAW} USDT. Your balance: {balance:.2f} USDT"
-        )
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /withdraw <BEP20_wallet>")
-        return
-
-    wallet = context.args[0]
-    user["pending_withdraw"] = {"amount": balance, "wallet": wallet}
+# -----------------------
+# ADMIN: DISTRIBUTE PROFIT
+# -----------------------
+def distribute_daily_profit():
+    for user_id, user in users.items():
+        invest = user.get("investment", {})
+        if invest.get("paid"):
+            amount = invest["amount"]
+            profit = amount * 0.01
+            user["balance"] = user.get("balance", 0) + profit
     save_data()
 
-    await update.message.reply_text(
-        f"✅ Withdrawal request received!\nAmount: {balance:.2f} USDT\nWallet: {wallet}"
-    )
-
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"💸 New withdrawal!\nUser: {user_id}\nAmount: {balance:.2f}\nWallet: {wallet}"
-    )
-
-# -----------------------
-# /processwithdraw (Admin)
-# -----------------------
-async def processwithdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Unauthorized.")
         return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /processwithdraw <user_id>")
-        return
-
-    uid = context.args[0]
-    user = users.get(uid)
-    if not user or "pending_withdraw" not in user:
-        await update.message.reply_text("❌ No pending withdrawal.")
-        return
-
-    pending = user.pop("pending_withdraw")
-    amount = pending["amount"]
-    user["balance"] -= amount
-    save_data()
-
-    await context.bot.send_message(
-        chat_id=int(uid),
-        text=f"✅ Your withdrawal of {amount:.2f} USDT has been processed!"
-    )
-    await update.message.reply_text(f"✅ User {uid} notified successfully.")
+    distribute_daily_profit()
+    await update.message.reply_text("✅ Daily 1% profits distributed to all investors!")
 
 # -----------------------
-# Run Bot
+# MAIN ENTRY POINT
 # -----------------------
 def main():
     TOKEN = os.getenv("BOT_TOKEN")
     if not TOKEN:
-        raise ValueError("⚠️ BOT_TOKEN not set!")
+        print("❌ BOT_TOKEN not found in environment variables.")
+        return
+
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Public Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pay", pay))
-    app.add_handler(CommandHandler("confirm", confirm))
     app.add_handler(CommandHandler("invest", invest))
-    app.add_handler(CommandHandler("confirm_invest", confirm_invest))
-    app.add_handler(CommandHandler("distribute", distribute))
     app.add_handler(CommandHandler("balance", balance))
     app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("faq", faq))
     app.add_handler(CommandHandler("withdraw", withdraw))
-    app.add_handler(CommandHandler("processwithdraw", processwithdraw))
-    app.add_handler(MessageHandler(filters.COMMAND, lambda u, c: u.message.reply_text("❌ Unknown command!")))
+    app.add_handler(CommandHandler("faq", faq))
+    app.add_handler(CommandHandler("help", help_command))
 
-    logger.info("🤖 Bot running successfully!")
+    # Admin Commands
+    app.add_handler(CommandHandler("confirm_invest", confirm_invest))
+    app.add_handler(CommandHandler("distribute", distribute))
+
+    logger.info("🤖 Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
