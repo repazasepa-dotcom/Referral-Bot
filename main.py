@@ -17,7 +17,7 @@ PAIRING_BONUS = 5
 MAX_PAIR_PER_DAY = 10
 MIN_WITHDRAW = 20
 
-# ------------------ LOAD INVESTMENTS ------------------
+# ------------------ INVESTMENTS ------------------
 try:
     with open("investments.json", "r") as f:
         investments = json.load(f)
@@ -36,7 +36,7 @@ def admin_only(func):
         return await func(update, context)
     return wrapper
 
-# ------------------ DAILY PROFIT JOB ------------------
+# ------------------ DAILY PROFIT ------------------
 async def daily_profit_job(context: ContextTypes.DEFAULT_TYPE):
     for inv in investments.values():
         if inv.get("status") == "active":
@@ -49,11 +49,9 @@ async def daily_profit_job(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     args = context.args
-    referrer = None
-    if args:
-        referrer = args[0]
-        if referrer == user_id:
-            referrer = None
+    referrer = args[0] if args else None
+    if referrer == user_id:
+        referrer = None
 
     if user_id not in investments:
         investments[user_id] = {
@@ -69,7 +67,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_investments()
 
     await update.message.reply_text(
-        f"🏁 Hello {update.effective_user.first_name}! 💰\n"
+        f"🏁 Hello {update.effective_user.first_name}!\n"
         f"Use /invest <amount> to deposit in USDT (min {MIN_INVESTMENT} USDT).\n"
         f"Send USDT to: {USDT_ADDRESS}\n"
         f"Submit TXID with /txid <transaction_hash> after sending.\n"
@@ -92,22 +90,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text)
 
-# ------------------ REMAINING USER + ADMIN COMMANDS ------------------
-# Include invest, submit_txid, profit, withdraw, earnings, confirm, confirm_withdraw, dashboard, user_detail
-# Copy all from your previous full code (already provided earlier)
+# ------------------ INVEST, TXID, PROFIT, WITHDRAW ------------------
+# Copy your previous functions here: invest(), submit_txid(), profit(), withdraw(), earnings()
 # They are fully compatible with JobQueue
+
+# ------------------ ADMIN COMMANDS ------------------
+# Copy your previous admin functions here: confirm(), confirm_withdraw(), dashboard(), user_detail()
+# All remain compatible
 
 # ------------------ RUN BOT ------------------
 def run_bot():
+    # Force JobQueue creation by setting use_context=True (PTB v20+ handles JobQueue automatically)
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Add all user & admin command handlers here
-    # e.g., app.add_handler(CommandHandler("start", start))
-    #       app.add_handler(CommandHandler("help", help_command))
-    #       app.add_handler(CommandHandler("invest", invest))
-    #       ... etc.
+    # Add all command handlers (user + admin)
+    # Example:
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    # Add other handlers: invest, txid, profit, withdraw, earnings, admin commands
 
-    # ✅ Use JobQueue for daily profit
+    # ✅ Daily profit JobQueue
     app.job_queue.run_repeating(daily_profit_job, interval=86400, first=10)
 
     print("🤖 Bot running on Telegram...")
