@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -42,7 +41,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     args = context.args
     referrer = None
-
     if args:
         referrer = args[0]
         if referrer == user_id:
@@ -107,12 +105,10 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError):
         await update.message.reply_text(f"Usage: /invest <amount>\nMinimum: {MIN_INVESTMENT} USDT")
         return
-
     if amount < MIN_INVESTMENT:
         await update.message.reply_text(f"Minimum investment is {MIN_INVESTMENT} USDT")
         return
 
-    # Show benefits first
     benefits_text = (
         "🔥 **Benefits you will get after investment** 🔥\n\n"
         "• 🚀 Coin names before pump\n"
@@ -153,7 +149,6 @@ async def submit_txid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except IndexError:
         await update.message.reply_text("Usage: /txid <transaction_hash>")
         return
-
     investments[user_id]["txid"] = txid
     save_investments()
     await update.message.reply_text("✅ TXID submitted. Admin will verify and confirm your investment.")
@@ -186,7 +181,6 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except IndexError:
         await update.message.reply_text("Usage: /withdraw <USDT BEP20 address>")
         return
-
     inv["withdraw_request"] = {"address": wallet_address, "amount": balance, "status": "pending"}
     save_investments()
     await update.message.reply_text("💳 Withdrawal request submitted. Admin will confirm it shortly.")
@@ -195,128 +189,19 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=f"💳 Withdrawal request from user {user_id}: {balance:.2f} USDT\nWallet: {wallet_address}\nConfirm with /confirm_withdraw {user_id}"
     )
 
-# ------------------ ADMIN COMMANDS ------------------
-@admin_only
-async def confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = context.args[0]
-    except IndexError:
-        await update.message.reply_text("Usage: /confirm <user_id>")
-        return
-    if user_id not in investments:
-        await update.message.reply_text("❌ No such user.")
-        return
-    inv = investments[user_id]
-    if "txid" not in inv:
-        await update.message.reply_text("❌ User has not submitted TXID yet.")
-        return
-
-    inv["status"] = "active"
-    inv["start_date"] = datetime.now().isoformat()
-    inv["locked_until"] = (datetime.now() + timedelta(days=30)).isoformat()
-    if "balance" not in inv:
-        inv["balance"] = 0
-
-    # Referral bonuses
-    referrer_id = inv.get("referrer")
-    if referrer_id and referrer_id in investments:
-        ref_inv = investments[referrer_id]
-        ref_inv.setdefault("balance", 0)
-        ref_inv["balance"] += REFERRAL_DIRECT_BONUS
-
-        today = datetime.now().date().isoformat()
-        if ref_inv.get("last_pair_day") != today:
-            ref_inv["pairing_bonus_today"] = 0
-            ref_inv["last_pair_day"] = today
-        if ref_inv.get("pairing_bonus_today",0) < MAX_PAIR_PER_DAY:
-            pair_bonus_available = min(MAX_PAIR_PER_DAY - ref_inv.get("pairing_bonus_today",0),1)
-            ref_inv["pairing_bonus_today"] += pair_bonus_available
-            ref_inv["balance"] += PAIRING_BONUS * pair_bonus_available
-
+# ------------------ DAILY PROFIT JOB ------------------
+async def daily_profit_job(context: ContextTypes.DEFAULT_TYPE):
+    for inv in investments.values():
+        if inv.get("status") == "active":
+            inv.setdefault("balance", 0)
+            inv["balance"] += inv["amount"] * DAILY_PROFIT_PERCENT
     save_investments()
-
-    await update.message.reply_text(f"✅ Investment for user {user_id} confirmed and active.")
-    benefits_text = (
-        "🔥 **Premium Member Signals Benefits** 🔥\n\n"
-        "🚀 Coin names before pump\n"
-        "🚀 Guidance on buy/sell targets\n"
-        "🚀 2-5 daily signals\n"
-        "🚀 Auto trading by bot\n"
-        "🚀 Special 1-3 daily premium signals (coins expected to pump within 24h)\n"
-        "🚀 Trade on Binance\n\n"
-        f"🎯 Access Premium Signals group:\n{PREMIUM_GROUP_LINK}"
-    )
-    await context.bot.send_message(chat_id=int(user_id), text=f"✅ Your investment is confirmed! Locked 30 days.\nDaily 1% profit starts accumulating.\n\n{benefits_text}")
-
-@admin_only
-async def confirm_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = context.args[0]
-    except IndexError:
-        await update.message.reply_text("Usage: /confirm_withdraw <user_id>")
-        return
-    if user_id not in investments:
-        await update.message.reply_text("❌ No such user.")
-        return
-    inv = investments[user_id]
-    req = inv.get("withdraw_request")
-    if not req or req["status"] != "pending":
-        await update.message.reply_text("❌ No pending withdrawal.")
-        return
-    req["status"] = "confirmed"
-    inv["balance"] = 0
-    save_investments()
-    await update.message.reply_text(f"✅ Withdrawal for user {user_id} confirmed.")
-    await context.bot.send_message(chat_id=int(user_id), text=f"✅ Your withdrawal of {req['amount']:.2f} USDT has been approved and will be sent to:\n{req['address']}")
-
-@admin_only
-async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    active = [uid for uid, inv in investments.items() if inv["status"] == "active"]
-    pending = [uid for uid, inv in investments.items() if inv["status"] == "pending"]
-    msg = "📊 **Admin Dashboard**\n\n🟢 Active Investments:\n"
-    if active:
-        for uid in active:
-            inv = investments[uid]
-            total = inv.get("balance",0)
-            msg += f"- {uid} | Amount: {inv['amount']} | Balance: {total:.2f}\n"
-    else:
-        msg += "No active investments.\n"
-    msg += "\n🟡 Pending Investments:\n"
-    if pending:
-        for uid in pending:
-            inv = investments[uid]
-            msg += f"- {uid} | Amount: {inv['amount']}\n"
-    else:
-        msg += "No pending investments.\n"
-    await update.message.reply_text(msg)
-
-@admin_only
-async def user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        user_id = context.args[0]
-    except IndexError:
-        await update.message.reply_text("Usage: /user <user_id>")
-        return
-    if user_id not in investments:
-        await update.message.reply_text("❌ No such user.")
-        return
-    inv = investments[user_id]
-    msg = f"📋 **User {user_id} Details:**\nStatus: {inv['status']}\nAmount: {inv['amount']}\nBalance: {inv.get('balance',0):.2f}\nReferrer: {inv.get('referrer')}\n"
-    await update.message.reply_text(msg)
-
-# ------------------ AUTO DAILY PROFIT ------------------
-async def auto_daily_profit():
-    while True:
-        for inv in investments.values():
-            if inv["status"] == "active":
-                inv.setdefault("balance",0)
-                inv["balance"] += inv["amount"] * DAILY_PROFIT_PERCENT
-        save_investments()
-        await asyncio.sleep(86400)  # 24h
+    print("✅ Daily profit added to all active investments.")
 
 # ------------------ MAIN ------------------
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
+
     # User commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -325,14 +210,17 @@ def main():
     app.add_handler(CommandHandler("txid", submit_txid))
     app.add_handler(CommandHandler("profit", profit))
     app.add_handler(CommandHandler("withdraw", withdraw))
+
     # Admin commands
     app.add_handler(CommandHandler("confirm", confirm))
     app.add_handler(CommandHandler("confirm_withdraw", confirm_withdraw))
     app.add_handler(CommandHandler("dashboard", dashboard))
     app.add_handler(CommandHandler("user", user_detail))
-    # Run auto daily profit
-    asyncio.create_task(auto_daily_profit())
-    print("Bot running...")
+
+    # Schedule daily profit
+    app.job_queue.run_repeating(daily_profit_job, interval=86400, first=10)
+
+    print("🤖 Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
