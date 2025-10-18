@@ -275,7 +275,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ✅ Safe reply (works even if update.message is None)
     if update.message:
         await update.message.reply_text(text, parse_mode="Markdown")
-   else:
+    else:
         await context.bot.send_message(chat_id=update.effective_user.id, text=text, parse_mode="Markdown")
        
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
