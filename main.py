@@ -272,12 +272,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /userinfo <user_id> - Show user details\n"
             "• /broadcast <message> - Send message to all users\n"
         )
+    # ✅ Safe reply (works even if update.message is None)
     if update.message:
-    await update.message.reply_text(text, parse_mode="Markdown")
-else:
-    await context.bot.send_message(chat_id=update.effective_user.id, text=text, parse_mode="Markdown")
-
-
+        await update.message.reply_text(text, parse_mode="Markdown")
+   else:
+        await context.bot.send_message(chat_id=update.effective_user.id, text=text, parse_mode="Markdown")
+       
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "💡 *FAQ - Auto-Trading & Investments*\n\n"
