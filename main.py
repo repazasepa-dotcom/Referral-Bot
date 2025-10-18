@@ -13,6 +13,7 @@ Features:
 - /distribute (admin) -> distribute 1% daily profit to active investments
 - persistent JSON storage (users.json, meta.json)
 - daily pairing reset
+- APScheduler for automatic daily profit distribution
 """
 
 import os
@@ -34,6 +35,9 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
+
+# APScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # -----------------------
 # Logging
@@ -78,8 +82,19 @@ def load_json_file(path: str, default):
     return default
 
 
+# initialize users and meta
 users: Dict[str, Dict[str, Any]] = load_json_file(DATA_FILE, {})
 meta: Dict[str, Any] = load_json_file(META_FILE, {"last_reset": None})
+
+# Ensure existing users have the new bonus fields if they were missing
+for u in users.values():
+    u.setdefault("direct_bonus_total", 0.0)
+    u.setdefault("pairing_bonus_total", 0.0)
+    u.setdefault("left", 0)
+    u.setdefault("right", 0)
+    u.setdefault("earned_from_referrals", 0.0)
+    u.setdefault("balance", 0.0)
+
 
 # -----------------------
 # Helper functions
@@ -112,24 +127,44 @@ def reset_pairing_if_needed():
         logger.info("🌞 Daily pairing counts reset.")
 
 
-def add_referral_bonus(referrer_id_str: str):
+def add_referral_bonus(referrer_id_str: str, bonus_type: str = "membership"):
     """
-    Give referrer the direct + pairing bonuses.
-    Works even if referrer doesn't exist (no-op).
+    Give referrer either direct or pairing bonus depending on context.
+
+    bonus_type:
+      - "membership": give direct bonus only
+      - "pairing": give pairing bonus only (respecting daily max and left/right)
     """
     ref = users.get(referrer_id_str)
     if not ref:
         return
-    # Direct bonus
-    ref["balance"] = ref.get("balance", 0.0) + DIRECT_BONUS
-    ref["earned_from_referrals"] = ref.get("earned_from_referrals", 0.0) + DIRECT_BONUS
 
-    # Pairing bonus: alternate left/right to balance pairs
-    side = "left" if ref.get("left", 0) <= ref.get("right", 0) else "right"
-    if ref.get(side, 0) < MAX_PAIRS_PER_DAY:
-        ref[side] = ref.get(side, 0) + 1
-        ref["balance"] += PAIRING_BONUS
-        ref["earned_from_referrals"] += PAIRING_BONUS
+    # initialize aggregator fields if missing
+    ref.setdefault("direct_bonus_total", 0.0)
+    ref.setdefault("pairing_bonus_total", 0.0)
+    ref.setdefault("earned_from_referrals", 0.0)
+    ref.setdefault("left", 0)
+    ref.setdefault("right", 0)
+    ref.setdefault("balance", 0.0)
+
+    if bonus_type == "membership":
+        # Direct referral bonus only
+        ref["balance"] = ref.get("balance", 0.0) + DIRECT_BONUS
+        ref["earned_from_referrals"] = ref.get("earned_from_referrals", 0.0) + DIRECT_BONUS
+        ref["direct_bonus_total"] = ref.get("direct_bonus_total", 0.0) + DIRECT_BONUS
+        logger.info("Direct bonus %s given to %s", DIRECT_BONUS, referrer_id_str)
+
+    elif bonus_type == "pairing":
+        # Pairing bonus only: alternate left/right to balance pairs
+        side = "left" if ref.get("left", 0) <= ref.get("right", 0) else "right"
+        if ref.get(side, 0) < MAX_PAIRS_PER_DAY:
+            ref[side] = ref.get(side, 0) + 1
+            ref["balance"] += PAIRING_BONUS
+            ref["earned_from_referrals"] = ref.get("earned_from_referrals", 0.0) + PAIRING_BONUS
+            ref["pairing_bonus_total"] = ref.get("pairing_bonus_total", 0.0) + PAIRING_BONUS
+            logger.info("Pairing bonus %s given to %s on side %s", PAIRING_BONUS, referrer_id_str, side)
+        else:
+            logger.info("Pairing bonus skipped for %s: daily limit reached", referrer_id_str)
 
 
 def distribute_daily_profit():
@@ -180,6 +215,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "investment": None,
             "pending_withdraw": None,
             "membership_referrer_rewarded": False,
+            "direct_bonus_total": 0.0,
+            "pairing_bonus_total": 0.0,
         }
         # If start param is given (referral), set if valid
         if context.args:
@@ -321,7 +358,7 @@ async def confirm_payment_manual(update: Update, context: ContextTypes.DEFAULT_T
     if not u.get("membership_referrer_rewarded"):
         ref = u.get("referrer")
         if ref:
-            add_referral_bonus(ref)
+            add_referral_bonus(ref, "membership")
             u["membership_referrer_rewarded"] = True
     save_data()
     # send premium join button to user
@@ -433,7 +470,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         if not user.get("membership_referrer_rewarded"):
             ref = user.get("referrer")
             if ref:
-                add_referral_bonus(ref)
+                add_referral_bonus(ref, "membership")
                 user["membership_referrer_rewarded"] = True
         save_data()
         await query.edit_message_text(f"✅ Payment for user {user_id} confirmed (TXID: {txid}).")
@@ -492,10 +529,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         save_data()
         await query.edit_message_text(f"✅ Investment for user {user_id} confirmed (Amount: {amount} USDT).")
 
-        # credit referrer for investment (if exists and not already credited for this invest)
+        # credit referrer for investment (pairing only)
         ref = user.get("referrer")
         if ref and not user["investment"].get("referrer_rewarded_for_invest"):
-            add_referral_bonus(ref)
+            add_referral_bonus(ref, "pairing")
             user["investment"]["referrer_rewarded_for_invest"] = True
             save_data()
 
@@ -584,7 +621,11 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u:
         await update.message.reply_text("❌ You are not registered. Use /start first.")
         return
+
     bal = u.get("balance", 0.0)
+    direct_bonus = u.get("direct_bonus_total", 0.0)
+    pairing_bonus = u.get("pairing_bonus_total", 0.0)
+
     invest_info = ""
     inv = u.get("investment")
     pending = u.get("pending_investment")
@@ -595,19 +636,26 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             days_left = "N/A"
         invest_info = (
-            f"\n💹 Active Investment: {inv['amount']:.2f} USDT"
+            f"\n\n💹 Active Investment: {inv['amount']:.2f} USDT"
             f"\n🔒 Locked for {INVEST_LOCK_DAYS} days"
             f"\n🕒 Days remaining: {days_left}"
         )
     elif pending:
         invest_info = (
-            f"\n💹 Pending Investment: {pending['amount']:.2f} USDT"
+            f"\n\n💹 Pending Investment: {pending['amount']:.2f} USDT"
             f"\n⏳ Waiting for admin confirmation"
         )
     else:
-        invest_info = "\n💹 No active investment."
+        invest_info = "\n\n💹 No active investment."
 
-    await update.message.reply_text(f"💰 Balance: {bal:.2f} USDT{invest_info}", parse_mode="Markdown")
+    await update.message.reply_text(
+        f"💰 *Balance:* {bal:.2f} USDT\n\n"
+        f"💸 *Bonus Breakdown:*\n"
+        f"• Direct Bonuses: {direct_bonus:.2f} USDT\n"
+        f"• Pairing Bonuses: {pairing_bonus:.2f} USDT"
+        f"{invest_info}",
+        parse_mode="Markdown",
+    )
 
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -735,7 +783,16 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is required.")
+
+    # Build the bot application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Scheduler (automatic daily profit)
+    scheduler = AsyncIOScheduler()
+    # run once every 24 hours
+    scheduler.add_job(distribute_daily_profit, "interval", hours=24, id="distribute_daily_profit")
+    scheduler.start()
+    logger.info("Scheduler started: distribute_daily_profit every 24 hours.")
 
     # Public Commands
     app.add_handler(CommandHandler("start", start))
