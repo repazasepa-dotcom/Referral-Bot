@@ -779,6 +779,12 @@ async def distribute_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # -----------------------
 # Admin utilities
 # -----------------------
+async def usercount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    total_users = len(users)
+    await update.message.reply_text(f"📊 Total registered users: {total_users}")
 async def userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Unauthorized.")
@@ -816,12 +822,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /broadcast <message>")
         return
     message = " ".join(context.args)
-    async def usercount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    total_users = len(users)
-    await update.message.reply_text(f"📊 Total registered users: {total_users}")
     sent = 0
     for uid in list(users.keys()):
         try:
