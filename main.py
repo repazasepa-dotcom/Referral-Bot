@@ -860,8 +860,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("withdraw", withdraw))
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.COMMAND, unknown)) 
-
+    
     # Admin Commands
     app.add_handler(CommandHandler("confirm", confirm_payment_manual))  # manual confirm membership
     app.add_handler(CommandHandler("processwithdraw", process_withdraw))
