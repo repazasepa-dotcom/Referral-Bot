@@ -864,6 +864,9 @@ def main():
     app.add_handler(CommandHandler("distribute", distribute_handler))
     app.add_handler(CommandHandler("userinfo", userinfo))
     app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("userinfo", userinfo))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("usercount", usercount)) 
 
     # Callback queries for inline confirm/reject buttons (payments & investments & withdraw)
     app.add_handler(
