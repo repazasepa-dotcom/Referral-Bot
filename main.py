@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 # referral_bot_complete.py
 """
-Final Telegram referral + investment bot (manual /distribute; APScheduler removed).
+Telegram referral + investment bot (manual /distribute; APScheduler removed).
 
 Features:
-- /start, /help, /faq, /referral
-- /pay <TXID> membership flow (admin confirm/reject via inline buttons)
-- /invest <amount> <TXID> investment flow (admin confirm/reject via inline buttons)
-- referral bonuses: DIRECT_BONUS (20 USDT), PAIRING_BONUS (5 USDT)
-- /balance, /stats
-- /withdraw <BEP20_wallet> -> admin confirm/reject via inline buttons or manual processing
-- /distribute (admin) -> distribute 1% profit manually to active investments
-- persistent JSON storage (users.json, meta.json)
-- daily pairing reset
-- Admin utilities: /confirm (manual), /processwithdraw, /userinfo, /broadcast
+- Persistent inline Main Menu for users (Balance / Invest / Referral / FAQ / Withdraw / Help)
+- Admin-only commands remain as slash commands (not shown to users in menus)
+- Payment, invest, withdraw flows with admin confirm/reject inline buttons
+- JSON storage: users.json, meta.json
+- Admin ID: 8150987682 (as provided)
+- BEP20 deposit address and premium group link included
 """
 
 import os
@@ -50,11 +46,12 @@ logger = logging.getLogger(__name__)
 DATA_FILE = "users.json"
 META_FILE = "meta.json"
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8150987682"))  # override with env
+# Admin ID provided by user
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8150987682"))
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # required
 BNB_ADDRESS = os.getenv(
     "BNB_ADDRESS", "0xC6219FFBA27247937A63963E4779e33F7930d497"
-)  # BEP20 wallet address (will be displayed monospace)
+)  # BEP20 wallet address
 PREMIUM_GROUP = os.getenv("PREMIUM_GROUP", "https://t.me/+ra4eSwIYWukwMjRl")
 
 MEMBERSHIP_FEE = 50
@@ -192,6 +189,24 @@ def distribute_daily_profit():
 
 
 # -----------------------
+# Menu utilities (NO admin buttons)
+# -----------------------
+def build_main_menu():
+    """
+    Returns InlineKeyboardMarkup for the main menu. No admin buttons included.
+    """
+    keyboard = [
+        [InlineKeyboardButton("💰 Balance", callback_data="menu:balance"),
+         InlineKeyboardButton("💸 Invest", callback_data="menu:invest")],
+        [InlineKeyboardButton("👥 Referrals", callback_data="menu:referral"),
+         InlineKeyboardButton("💎 FAQ", callback_data="menu:faq")],
+        [InlineKeyboardButton("🏦 Withdraw", callback_data="menu:withdraw"),
+         InlineKeyboardButton("❓ Help", callback_data="menu:help")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# -----------------------
 # Command Handlers
 # -----------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -233,7 +248,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 Auto-trading access\n"
         "✨ Exclusive alerts\n\n"
     )
-    # BNB address shown in monospace (no 'Mono' word)
+    # BNB address shown in monospace
+    menu = build_main_menu()
     await update.message.reply_text(
         f"{benefits_text}"
         f"💰 To access, pay *{MEMBERSHIP_FEE} USDT* (BEP20) to this address:\n"
@@ -241,11 +257,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"After payment submit TXID: `/pay <TXID>`\n\n"
         f"🔗 Your referral link:\n{referral_link}",
         parse_mode="Markdown",
+        reply_markup=menu,
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    is_admin = update.effective_user.id == ADMIN_ID
     text = (
         "🤖 *Available Commands*\n\n"
         "💬 General:\n"
@@ -263,21 +279,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Direct Bonus: {DIRECT_BONUS} USDT\n"
         f"• Pairing Bonus: {PAIRING_BONUS} USDT (per pair, max {MAX_PAIRS_PER_DAY}/day)\n"
     )
-    if is_admin:
-        text += (
-            "\n--- 👑 *Admin Commands* ---\n"
-            "• /confirm <user_id> - Manually confirm membership\n"
-            "• /processwithdraw <user_id> - Mark withdrawal as processed\n"
-            "• /distribute - Distribute daily 1% profit to investors (manual)\n"
-            "• /userinfo <user_id> - Show user details\n"
-            "• /broadcast <message> - Send message to all users\n"
-        )
-    # ✅ Safe reply (works even if update.message is None)
     if update.message:
-        await update.message.reply_text(text, parse_mode="Markdown")
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=build_main_menu())
     else:
         await context.bot.send_message(chat_id=update.effective_user.id, text=text, parse_mode="Markdown")
-       
+
+
 async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "💡 *FAQ - Auto-Trading & Investments*\n\n"
@@ -289,13 +296,13 @@ async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Daily profit: *1%* added to balance\n"
         f"• Minimum withdraw: *{MIN_WITHDRAW} USDT*\n"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=build_main_menu())
 
 
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     link = f"https://t.me/{context.bot.username}?start={user_id}"
-    await update.message.reply_text(f"🔗 Your referral link:\n{link}")
+    await update.message.reply_text(f"🔗 Your referral link:\n{link}", reply_markup=build_main_menu())
 
 
 # -----------------------
@@ -304,7 +311,12 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not context.args:
-        await update.message.reply_text("Usage: /pay <TXID>")
+        await update.message.reply_text(
+            "Usage: /pay <TXID>\n\n"
+            f"Send *{MEMBERSHIP_FEE} USDT* (BEP20) to:\n`{BNB_ADDRESS}`\nThen submit: `/pay <TXID>`",
+            parse_mode="Markdown",
+            reply_markup=build_main_menu(),
+        )
         return
     txid = context.args[0]
     users.setdefault(user_id, {})
@@ -339,13 +351,13 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.exception("Failed to notify admin about membership payment.")
 
     await update.message.reply_text(
-        "✅ TXID submitted. Admin will verify your payment soon.", parse_mode="Markdown"
+        "✅ TXID submitted. Admin will verify your payment soon.", parse_mode="Markdown", reply_markup=build_main_menu()
     )
 
 
 async def confirm_payment_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Backwards-compatible admin command (still present): /confirm <user_id>
+    Admin-only command: /confirm <user_id>
     """
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
@@ -394,6 +406,7 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"💹 Usage: /invest <amount> <TXID>\nMinimum: {INVEST_MIN} USDT\nDeposit to: `{BNB_ADDRESS}`",
             parse_mode="Markdown",
+            reply_markup=build_main_menu(),
         )
         return
     try:
@@ -444,6 +457,7 @@ async def invest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ Investment submitted and is pending admin verification. You will be notified when confirmed.",
         parse_mode="Markdown",
+        reply_markup=build_main_menu(),
     )
 
 
@@ -595,294 +609,251 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         pending = user.pop("pending_withdraw")
         amount = pending.get("amount", user.get("balance", 0.0))
         # subtract from balance safely
-        user["balance"] = max(user.get("balance", 0.0) - amount, 0.0)
+        user["balance"] = max(user.get("balance", 0.0) - amount,
+                0.0)
         save_data()
-        await query.edit_message_text(f"✅ Withdrawal for user {user_id} confirmed (Amount: {amount} USDT).")
+        await query.edit_message_text(
+            f"✅ Withdrawal of {amount:.2f} USDT for user {user_id} marked as completed."
+        )
         try:
-            await context.bot.send_message(chat_id=int(user_id), text=f"✅ Your withdrawal of {amount:.2f} USDT was processed.")
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=f"✅ Your withdrawal of {amount:.2f} USDT has been processed successfully!",
+            )
         except Exception:
-            logger.exception("Failed to notify user after withdraw processed.")
+            logger.exception("Failed to notify user after confirming withdrawal.")
         return
 
     if action == "reject_withdraw":
         if not user.get("pending_withdraw"):
             await query.edit_message_text("❌ No pending withdraw for this user.")
             return
-        user.pop("pending_withdraw", None)
+        pending = user.pop("pending_withdraw")
         save_data()
-        await query.edit_message_text(f"❌ Withdrawal for user {user_id} rejected.")
+        await query.edit_message_text(
+            f"❌ Withdrawal for user {user_id} rejected (Amount: {pending['amount']:.2f} USDT)."
+        )
         try:
-            await context.bot.send_message(chat_id=int(user_id), text="❌ Your withdrawal request was rejected by admin.")
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=(
+                    f"❌ Your withdrawal request of {pending['amount']:.2f} USDT was rejected by admin.\n"
+                    "If you believe this is an error, please contact support."
+                ),
+            )
         except Exception:
-            logger.exception("Failed to notify user after withdraw rejection.")
+            logger.exception("Failed to notify user after withdrawal rejection.")
         return
 
-    # default fallback
-    await query.edit_message_text("❌ Unknown action.")
-
-
 # -----------------------
-# Balance & Stats
+# Menu callbacks (for normal user buttons)
 # -----------------------
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    u = users.get(user_id)
-    if not u:
-        await update.message.reply_text("❌ You are not registered. Use /start first.")
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = str(query.from_user.id)
+    data = query.data.split(":", 1)[1] if ":" in query.data else None
+    if not data:
+        await query.answer("❌ Invalid menu selection.")
         return
 
-    bal = u.get("balance", 0.0)
-    direct_bonus = u.get("direct_bonus_total", 0.0)
-    pairing_bonus = u.get("pairing_bonus_total", 0.0)
+    await query.answer()
 
-    invest_info = ""
-    inv = u.get("investment")
-    pending = u.get("pending_investment")
-    if inv and inv.get("active"):
-        try:
-            lock_until = datetime.fromisoformat(inv["lock_until"])
-            days_left = max((lock_until - datetime.utcnow()).days, 0)
-        except Exception:
-            days_left = "N/A"
-        invest_info = (
-            f"\n\n💹 Active Investment: {inv['amount']:.2f} USDT"
-            f"\n🔒 Locked for {INVEST_LOCK_DAYS} days"
-            f"\n🕒 Days remaining: {days_left}"
+    user = users.get(user_id, {})
+    if data == "balance":
+        bal = user.get("balance", 0.0)
+        inv = user.get("investment")
+        inv_text = ""
+        if inv and inv.get("active"):
+            amt = inv.get("amount", 0.0)
+            start = inv.get("start_date")
+            lock_until = inv.get("lock_until")
+            inv_text = (
+                f"\n💹 Active Investment:\n"
+                f"• Amount: {amt:.2f} USDT\n"
+                f"• Started: {start}\n"
+                f"• Locked until: {lock_until}"
+            )
+        await query.edit_message_text(
+            f"💰 *Your Balance:* {bal:.2f} USDT{inv_text}",
+            parse_mode="Markdown",
+            reply_markup=build_main_menu(),
         )
-    elif pending:
-        invest_info = (
-            f"\n\n💹 Pending Investment: {pending['amount']:.2f} USDT"
-            f"\n⏳ Waiting for admin confirmation"
+
+    elif data == "invest":
+        await query.edit_message_text(
+            f"💸 To invest:\n\n"
+            f"1️⃣ Send at least *{INVEST_MIN} USDT (BEP20)* to this address:\n`{BNB_ADDRESS}`\n"
+            f"2️⃣ Submit your TXID using:\n`/invest <amount> <TXID>`",
+            parse_mode="Markdown",
+            reply_markup=build_main_menu(),
         )
-    else:
-        invest_info = "\n\n💹 No active investment."
 
-    await update.message.reply_text(
-        f"💰 *Balance:* {bal:.2f} USDT\n\n"
-        f"💸 *Bonus Breakdown:*\n"
-        f"• Direct Bonuses: {direct_bonus:.2f} USDT\n"
-        f"• Pairing Bonuses: {pairing_bonus:.2f} USDT"
-        f"{invest_info}",
-        parse_mode="Markdown",
-    )
-
-
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reset_pairing_if_needed()
-    user_id = str(update.effective_user.id)
-    u = users.get(user_id)
-    if not u:
-        await update.message.reply_text("❌ You are not registered. Use /start first.")
-        return
-    referrals = len(u.get("referrals", []))
-    earned = u.get("earned_from_referrals", 0.0)
-    bal = u.get("balance", 0.0)
-    paid = u.get("paid", False)
-
-    invest_info = ""
-    inv = u.get("investment")
-    pending = u.get("pending_investment")
-    if inv and inv.get("active"):
-        try:
-            lock_until = datetime.fromisoformat(inv["lock_until"])
-            days_left = max((lock_until - datetime.utcnow()).days, 0)
-        except Exception:
-            days_left = "N/A"
-        invest_info = (
-            f"\n💹 Investment: {inv['amount']:.2f} USDT"
-            f"\n🔒 Locked, {days_left} days remaining"
+    elif data == "referral":
+        link = f"https://t.me/{context.bot.username}?start={user_id}"
+        refs = users.get(user_id, {}).get("referrals", [])
+        await query.edit_message_text(
+            f"👥 *Your Referral Link:*\n{link}\n\n👤 Total Referrals: {len(refs)}",
+            parse_mode="Markdown",
+            reply_markup=build_main_menu(),
         )
-    elif pending:
-        invest_info = f"\n💹 Pending investment: {pending['amount']:.2f} USDT (awaiting admin)"
-    else:
-        invest_info = "\n💹 No active investment."
 
-    await update.message.reply_text(
-        f"📊 *Your Stats*\n\n"
-        f"👥 Referrals: {referrals}\n"
-        f"💎 Earned from referrals: {earned:.2f} USDT\n"
-        f"💰 Balance: {bal:.2f} USDT\n"
-        f"🏷️ Membership paid: {'✅' if paid else '❌'}\n"
-        f"{invest_info}",
-        parse_mode="Markdown",
-    )
+    elif data == "faq":
+        text = (
+            "💡 *FAQ - Auto-Trading & Investments*\n\n"
+            f"• Minimum investment: *{INVEST_MIN} USDT*\n"
+            f"• Deposit to BEP20 address: `{BNB_ADDRESS}`\n"
+            f"• Direct bonus: *{DIRECT_BONUS} USDT*\n"
+            f"• Pairing bonus: *{PAIRING_BONUS} USDT*\n"
+            f"• Investment lock: *{INVEST_LOCK_DAYS} days*\n"
+            f"• Daily profit: *1%* added to balance\n"
+            f"• Minimum withdraw: *{MIN_WITHDRAW} USDT*\n"
+        )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=build_main_menu())
 
+    elif data == "withdraw":
+        await query.edit_message_text(
+            f"🏦 To request withdrawal, type:\n`/withdraw <your_wallet_address>`\n\n"
+            f"💵 Minimum withdrawal: *{MIN_WITHDRAW} USDT*",
+            parse_mode="Markdown",
+            reply_markup=build_main_menu(),
+        )
+
+    elif data == "help":
+        await query.edit_message_text(
+            "❓ *Help Menu*\n\n"
+            "Use the buttons to navigate:\n"
+            "💰 Balance — View your balance & investment\n"
+            "💸 Invest — Submit new investment\n"
+            "👥 Referral — Your referral link\n"
+            "💎 FAQ — Info about bonuses and rules\n"
+            "🏦 Withdraw — How to withdraw funds",
+            parse_mode="Markdown",
+            reply_markup=build_main_menu(),
+        )
 
 # -----------------------
-# Withdraw flow
+# Withdraw command (user)
 # -----------------------
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    u = users.get(user_id)
-    if not u:
-        await update.message.reply_text("❌ You are not registered. Use /start first.")
-        return
-    if not context.args:
-        await update.message.reply_text("🏦 Usage: /withdraw <BEP20_wallet_address>")
+    user = users.get(user_id, {})
+    if len(context.args) < 1:
+        await update.message.reply_text(
+            f"Usage: /withdraw <wallet_address>\nMinimum: {MIN_WITHDRAW} USDT",
+            reply_markup=build_main_menu(),
+        )
         return
     wallet = context.args[0]
-    bal = u.get("balance", 0.0)
-    if bal < MIN_WITHDRAW:
-        await update.message.reply_text(f"❌ Minimum withdrawal is {MIN_WITHDRAW} USDT. Your balance: {bal:.2f} USDT")
+    amount = user.get("balance", 0.0)
+    if amount < MIN_WITHDRAW:
+        await update.message.reply_text(
+            f"❌ Minimum withdrawal is {MIN_WITHDRAW} USDT. Your balance: {amount:.2f} USDT",
+            reply_markup=build_main_menu(),
+        )
         return
-    # set pending withdraw record
-    u["pending_withdraw"] = {"amount": bal, "wallet": wallet, "requested_at": datetime.utcnow().isoformat()}
+    user["pending_withdraw"] = {"wallet": wallet, "amount": amount, "submitted_at": datetime.utcnow().isoformat()}
     save_data()
-    await update.message.reply_text(f"✅ Withdrawal request submitted for {bal:.2f} USDT. Admin will process it soon.")
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Confirm Withdraw", callback_data=f"confirm_withdraw:{user_id}"),
+                InlineKeyboardButton("❌ Reject Withdraw", callback_data=f"reject_withdraw:{user_id}"),
+            ]
+        ]
+    )
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"💰 New withdrawal request\nUser: {user_id}\nAmount: {bal:.2f} USDT\nWallet: `{wallet}`",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[
-                    InlineKeyboardButton("✅ Confirm Withdraw", callback_data=f"confirm_withdraw:{user_id}"),
-                    InlineKeyboardButton("❌ Reject Withdraw", callback_data=f"reject_withdraw:{user_id}"),
-                ]]
+            text=(
+                f"🏦 *New Withdrawal Request*\n\n"
+                f"👤 User: {update.effective_user.full_name} (ID: {user_id})\n"
+                f"💵 Amount: {amount:.2f} USDT\n"
+                f"💳 Wallet: `{wallet}`\n"
             ),
+            parse_mode="Markdown",
+            reply_markup=keyboard,
         )
     except Exception:
-        logger.exception("Failed to notify admin of withdrawal.")
+        logger.exception("Failed to notify admin about withdraw.")
 
-
-async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    if not context.args:
-        await update.message.reply_text("Usage: /processwithdraw <user_id>")
-        return
-    uid = context.args[0]
-    u = users.get(uid)
-    if not u or "pending_withdraw" not in u or not u.get("pending_withdraw"):
-        await update.message.reply_text("❌ No pending withdrawal for this user.")
-        return
-    pending = u.pop("pending_withdraw")
-    amount = pending["amount"]
-    u["balance"] = max(u.get("balance", 0.0) - amount, 0.0)
-    save_data()
-    await update.message.reply_text(f"✅ Processed withdrawal for user {uid}.")
-    try:
-        await context.bot.send_message(chat_id=int(uid), text=f"✅ Your withdrawal of {amount:.2f} USDT was processed.")
-    except Exception:
-        logger.exception("Failed to notify user after processing withdraw.")
-
+    await update.message.reply_text(
+        "✅ Withdrawal request submitted. Admin will process it soon.",
+        reply_markup=build_main_menu(),
+    )
 
 # -----------------------
-# Admin distribute handler (manual)
+# Admin Commands
 # -----------------------
-async def distribute_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def distribute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("❌ Unauthorized.")
         return
     count = distribute_daily_profit()
-    await update.message.reply_text(f"✅ Distributed daily profit to {count} investors.")
+    await update.message.reply_text(f"💹 Distributed daily profit to {count} active investors.")
 
 
-# -----------------------
-# Admin utilities
-# -----------------------
 async def usercount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
-    total_users = len(users)
-    await update.message.reply_text(f"📊 Total registered users: {total_users}")
+        return await update.message.reply_text("❌ Unauthorized.")
+    count = len(users)
+    await update.message.reply_text(f"📊 Total registered users: {count}")
+
+
 async def userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
+        return await update.message.reply_text("❌ Unauthorized.")
     if not context.args:
-        await update.message.reply_text("Usage: /userinfo <user_id>")
-        return
+        return await update.message.reply_text("Usage: /userinfo <user_id>")
     uid = context.args[0]
-    u = users.get(uid)
-    if not u:
-        await update.message.reply_text("❌ User not found.")
-        return
-    # Limit output size, but show key fields
-    info = {
-        "id": uid,
-        "balance": u.get("balance", 0.0),
-        "earned_from_referrals": u.get("earned_from_referrals", 0.0),
-        "direct_bonus_total": u.get("direct_bonus_total", 0.0),
-        "pairing_bonus_total": u.get("pairing_bonus_total", 0.0),
-        "referrer": u.get("referrer"),
-        "referrals_count": len(u.get("referrals", [])),
-        "paid": u.get("paid", False),
-        "investment": u.get("investment"),
-        "pending_investment": u.get("pending_investment"),
-        "pending_withdraw": u.get("pending_withdraw"),
-    }
-    await update.message.reply_text(f"📋 User info:\n`{json.dumps(info, default=str, indent=2)}`", parse_mode="Markdown")
+    user = users.get(uid)
+    if not user:
+        return await update.message.reply_text("❌ User not found.")
+    await update.message.reply_text(json.dumps(user, indent=2))
 
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Unauthorized.")
-        return
+        return await update.message.reply_text("❌ Unauthorized.")
     if not context.args:
-        await update.message.reply_text("Usage: /broadcast <message>")
-        return
-    message = " ".join(context.args)
+        return await update.message.reply_text("Usage: /broadcast <message>")
+    msg = " ".join(context.args)
     sent = 0
     for uid in list(users.keys()):
         try:
-            await context.bot.send_message(chat_id=int(uid), text=message)
+            await context.bot.send_message(chat_id=int(uid), text=msg)
             sent += 1
         except Exception:
-            logger.exception("Failed to broadcast to %s", uid)
-    await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
-
-
-# -----------------------
-# Unknown command
-# -----------------------
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Unknown command. Use /help to see available commands.")
-
+            continue
+    await update.message.reply_text(f"📢 Broadcast sent to {sent} users.")
 
 # -----------------------
-# Main boot
+# Main
 # -----------------------
 def main():
-    if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable is required.")
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Public Commands
+    # Basic user commands
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("faq", faq))
     app.add_handler(CommandHandler("referral", referral))
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("invest", invest))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("withdraw", withdraw))
-    app.add_handler(CommandHandler("help", help_command))
-    
-    # Admin Commands
-    app.add_handler(CommandHandler("confirm", confirm_payment_manual))  # manual confirm membership
-    app.add_handler(CommandHandler("processwithdraw", process_withdraw))
-    app.add_handler(CommandHandler("distribute", distribute_handler))
+
+    # Admin-only commands
+    app.add_handler(CommandHandler("distribute", distribute))
+    app.add_handler(CommandHandler("usercount", usercount))
     app.add_handler(CommandHandler("userinfo", userinfo))
     app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("userinfo", userinfo))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("usercount", usercount)) 
+    app.add_handler(CommandHandler("confirm", confirm_payment_manual))
 
-    # Callback queries for inline confirm/reject buttons (payments & investments & withdraw)
-    app.add_handler(
-        CallbackQueryHandler(
-            callback_query_handler,
-            pattern="^(confirm_invest|reject_invest|confirm_pay|reject_pay|confirm_withdraw|reject_withdraw):"
-        )
-    )
+    # Callback query handler (for inline buttons)
+    app.add_handler(CallbackQueryHandler(callback_query_handler, pattern="^(confirm_|reject_)"))
+    app.add_handler(CallbackQueryHandler(menu_handler, pattern="^menu:"))
 
-    # Unknown fallback
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))
-
-    logger.info("🤖 Bot starting...")
+    logger.info("🚀 Bot started successfully.")
     app.run_polling()
 
 
