@@ -283,7 +283,7 @@ async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Direct bonus: *{DIRECT_BONUS} USDT*\n"
         f"• Pairing bonus: *{PAIRING_BONUS} USDT*\n"
         f"• Investment lock: *{INVEST_LOCK_DAYS} days*\n"
-        "• Daily profit: *1%* added to balance (use /distribute to apply)\n"
+        "• Daily profit: *1%* added to balance\n"
         f"• Minimum withdraw: *{MIN_WITHDRAW} USDT*\n"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
