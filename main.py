@@ -850,6 +850,7 @@ def main():
     # Public Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.COMMAND, unknown))  # unknown last
     app.add_handler(CommandHandler("faq", faq))
     app.add_handler(CommandHandler("referral", referral))
     app.add_handler(CommandHandler("pay", pay))
