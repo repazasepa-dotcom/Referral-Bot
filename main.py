@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # referral_bot_complete.py
 """
-Complete Telegram referral + investment bot ready to deploy.
+Final Telegram referral + investment bot (manual /distribute; APScheduler removed).
 
 Features:
-- /start, /help, /faq
+- /start, /help, /faq, /referral
 - /pay <TXID> membership flow (admin confirm/reject via inline buttons)
 - /invest <amount> <TXID> investment flow (admin confirm/reject via inline buttons)
 - referral bonuses: DIRECT_BONUS (20 USDT), PAIRING_BONUS (5 USDT)
 - /balance, /stats
 - /withdraw <BEP20_wallet> -> admin confirm/reject via inline buttons or manual processing
-- /distribute (admin) -> distribute 1% daily profit to active investments
+- /distribute (admin) -> distribute 1% profit manually to active investments
 - persistent JSON storage (users.json, meta.json)
 - daily pairing reset
-- APScheduler for automatic daily profit distribution
+- Admin utilities: /confirm (manual), /processwithdraw, /userinfo, /broadcast
 """
 
 import os
@@ -35,9 +35,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
-
-# APScheduler
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # -----------------------
 # Logging
@@ -86,7 +83,7 @@ def load_json_file(path: str, default):
 users: Dict[str, Dict[str, Any]] = load_json_file(DATA_FILE, {})
 meta: Dict[str, Any] = load_json_file(META_FILE, {"last_reset": None})
 
-# Ensure existing users have the new bonus fields if they were missing
+# Ensure existing users have expected fields
 for u in users.values():
     u.setdefault("direct_bonus_total", 0.0)
     u.setdefault("pairing_bonus_total", 0.0)
@@ -94,7 +91,8 @@ for u in users.values():
     u.setdefault("right", 0)
     u.setdefault("earned_from_referrals", 0.0)
     u.setdefault("balance", 0.0)
-
+    u.setdefault("referrals", [])
+    u.setdefault("paid", False)
 
 # -----------------------
 # Helper functions
@@ -164,7 +162,7 @@ def add_referral_bonus(referrer_id_str: str, bonus_type: str = "membership"):
             ref["pairing_bonus_total"] = ref.get("pairing_bonus_total", 0.0) + PAIRING_BONUS
             logger.info("Pairing bonus %s given to %s on side %s", PAIRING_BONUS, referrer_id_str, side)
         else:
-            logger.info("Pairing bonus skipped for %s: daily limit reached", referrer_id_str)
+            logger.info("Pairing bonus skipped for %s: daily limit reached")
 
 
 def distribute_daily_profit():
@@ -253,7 +251,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💬 General:\n"
         "• /start - Register & get your referral link\n"
         "• /faq - Learn how investing & referrals work\n"
-        "• /help - Show this menu\n\n"
+        "• /help - Show this menu\n"
+        "• /referral - Show your referral link\n\n"
         "💰 Account & Earnings:\n"
         "• /pay <TXID> - Submit membership payment\n"
         "• /invest <amount> <TXID> - Submit investment (min 50 USDT)\n"
@@ -269,8 +268,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n--- 👑 *Admin Commands* ---\n"
             "• /confirm <user_id> - Manually confirm membership\n"
             "• /processwithdraw <user_id> - Mark withdrawal as processed\n"
-            "• /distribute - Distribute daily 1% profit to investors\n\n"
-            "Admin also receives inline Confirm/Reject buttons when users submit payments or investments."
+            "• /distribute - Distribute daily 1% profit to investors (manual)\n"
+            "• /userinfo <user_id> - Show user details\n"
+            "• /broadcast <message> - Send message to all users\n"
         )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -283,10 +283,16 @@ async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Direct bonus: *{DIRECT_BONUS} USDT*\n"
         f"• Pairing bonus: *{PAIRING_BONUS} USDT*\n"
         f"• Investment lock: *{INVEST_LOCK_DAYS} days*\n"
-        "• Daily profit: *1%* added to balance\n"
+        "• Daily profit: *1%* added to balance (use /distribute to apply)\n"
         f"• Minimum withdraw: *{MIN_WITHDRAW} USDT*\n"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    link = f"https://t.me/{context.bot.username}?start={user_id}"
+    await update.message.reply_text(f"🔗 Your referral link:\n{link}")
 
 
 # -----------------------
@@ -760,7 +766,7 @@ async def process_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # -----------------------
-# Admin distribute handler
+# Admin distribute handler (manual)
 # -----------------------
 async def distribute_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -768,6 +774,56 @@ async def distribute_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     count = distribute_daily_profit()
     await update.message.reply_text(f"✅ Distributed daily profit to {count} investors.")
+
+
+# -----------------------
+# Admin utilities
+# -----------------------
+async def userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /userinfo <user_id>")
+        return
+    uid = context.args[0]
+    u = users.get(uid)
+    if not u:
+        await update.message.reply_text("❌ User not found.")
+        return
+    # Limit output size, but show key fields
+    info = {
+        "id": uid,
+        "balance": u.get("balance", 0.0),
+        "earned_from_referrals": u.get("earned_from_referrals", 0.0),
+        "direct_bonus_total": u.get("direct_bonus_total", 0.0),
+        "pairing_bonus_total": u.get("pairing_bonus_total", 0.0),
+        "referrer": u.get("referrer"),
+        "referrals_count": len(u.get("referrals", [])),
+        "paid": u.get("paid", False),
+        "investment": u.get("investment"),
+        "pending_investment": u.get("pending_investment"),
+        "pending_withdraw": u.get("pending_withdraw"),
+    }
+    await update.message.reply_text(f"📋 User info:\n`{json.dumps(info, default=str, indent=2)}`", parse_mode="Markdown")
+
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Unauthorized.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    message = " ".join(context.args)
+    sent = 0
+    for uid in list(users.keys()):
+        try:
+            await context.bot.send_message(chat_id=int(uid), text=message)
+            sent += 1
+        except Exception:
+            logger.exception("Failed to broadcast to %s", uid)
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
 
 
 # -----------------------
@@ -783,21 +839,13 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is required.")
-
-    # Build the bot application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Scheduler (automatic daily profit)
-    scheduler = AsyncIOScheduler()
-    # run once every 24 hours
-    scheduler.add_job(distribute_daily_profit, "interval", hours=24, id="distribute_daily_profit")
-    scheduler.start()
-    logger.info("Scheduler started: distribute_daily_profit every 24 hours.")
 
     # Public Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("faq", faq))
+    app.add_handler(CommandHandler("referral", referral))
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("invest", invest))
     app.add_handler(CommandHandler("balance", balance))
@@ -805,9 +853,11 @@ def main():
     app.add_handler(CommandHandler("withdraw", withdraw))
 
     # Admin Commands
-    app.add_handler(CommandHandler("confirm", confirm_payment_manual))  # optional manual confirm
+    app.add_handler(CommandHandler("confirm", confirm_payment_manual))  # manual confirm membership
     app.add_handler(CommandHandler("processwithdraw", process_withdraw))
     app.add_handler(CommandHandler("distribute", distribute_handler))
+    app.add_handler(CommandHandler("userinfo", userinfo))
+    app.add_handler(CommandHandler("broadcast", broadcast))
 
     # Callback queries for inline confirm/reject buttons (payments & investments & withdraw)
     app.add_handler(
