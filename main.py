@@ -254,7 +254,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         " 🚀 1–3 Special Signals Daily (coins that pump within 24 h)\n\n"
         "💳 𝟏-𝐌𝐨𝐧𝐭𝐡 𝐏𝐫𝐞𝐦𝐢𝐮𝐦: 𝟓𝟎 𝐔𝐒𝐃𝐓\n\n"
     )
-    )
     # BNB address shown in monospace
     menu = build_main_menu()
     await update.message.reply_text(
