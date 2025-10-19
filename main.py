@@ -241,12 +241,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     referral_link = f"https://t.me/{context.bot.username}?start={user_id}"
     benefits_text = (
-        "🔥 *Premium Membership Benefits* 🔥\n\n"
-        "🚀 Get early coin signals\n"
-        "📈 Buy & sell targets\n"
-        "💎 2–5 signals daily\n"
-        "🤖 Auto-trading access\n"
-        "✨ Exclusive alerts\n\n"
+        "💼 𝙋𝙧𝙚𝙢𝙞𝙪𝙢 𝙑𝙄𝙋 𝙈𝙚𝙢𝙗𝙚𝙧𝙨𝙝𝙞𝙥\n\n"
+        "👑 *Lifetime Membership Fee:*\n"
+        "💰 𝟓𝟎𝟎 𝐔𝐒𝐃𝐓 (𝐃𝐢𝐬𝐜𝐨𝐮𝐧𝐭𝐞𝐝 𝐏𝐫𝐢𝐜𝐞) — 𝐎𝐧𝐥𝐲 𝟐 𝐒𝐥𝐨𝐭𝐬 𝐋𝐞𝐟𝐭!\n"
+        "_🪙 Original Price: 1000 USDT (Lifetime)_\n\n"
+        "_🔥 Benefits:_\n"
+        "🚀 Early access to coins before they pump\n"
+        "📊 Buy & Sell targets guidance\n"
+        "📈 2–5 Daily Signals\n"
+        "🤖 Auto Trading by Bot\n"
+        "💎 Premium Channel Only:\n"
+        " 🚀 1–3 Special Signals Daily (coins that pump within 24 h)\n\n"
+        "💳 𝟏-𝐌𝐨𝐧𝐭𝐡 𝐏𝐫𝐞𝐦𝐢𝐮𝐦: 𝟓𝟎 𝐔𝐒𝐃𝐓\n\n"
+    )
     )
     # BNB address shown in monospace
     menu = build_main_menu()
