@@ -258,7 +258,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu = build_main_menu()
     await update.message.reply_text(
         f"{benefits_text}"
-        f"💰 To access, pay *{MEMBERSHIP_FEE} USDT* (BEP20) to this address:\n"
+        f"💰 To access, pay *USDT* (BEP20) to this address:\n"
         f"`{BNB_ADDRESS}`\n\n"
         f"After payment submit TXID: `/pay <TXID>`\n\n"
         f"🔗 Your referral link:\n{referral_link}",
