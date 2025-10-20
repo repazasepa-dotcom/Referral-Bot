@@ -720,13 +720,26 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "invest":
-        await query.edit_message_text(
-            f"💸 To invest:\n\n"
-            f"1️⃣ Send at least *{INVEST_MIN} USDT (BEP20)* to this address:\n`{BNB_ADDRESS}`\n"
-            f"2️⃣ Submit your TXID using:\n`/invest <amount> <TXID>`",
-            parse_mode="Markdown",
-            reply_markup=build_main_menu(),
-        )
+    invest_text = (
+        "💼 *Investment Instructions*\n\n"
+        "💰 *Minimum Investment:* 50 USDT (BEP20)\n"
+        "📈 Earn daily returns and referral rewards.\n\n"
+        "💳 *Payment Address (BEP20):*\n"
+        "`0xC6219FFBA27247937A63963E4779e33F7930d497`\n\n"
+        "📤 *How to Invest:*\n"
+        "1️⃣ Send your USDT to the address above.\n"
+        "2️⃣ Submit your TXID using:\n"
+        "`/invest <amount> <TXID>`\n"
+        "3️⃣ Your *initial investment* will be *locked for 30 days*.\n"
+        " 💹 It will generate *1% daily profit*, which will be added automatically to your balance.\n\n"
+        "⏱️ Once confirmed, your balance updates automatically."
+    )
+
+    await query.edit_message_text(
+        text=invest_text,
+        parse_mode="Markdown",
+        reply_markup=build_main_menu(),
+    )
 
     elif data == "referral":
         link = f"https://t.me/{context.bot.username}?start={user_id}"
