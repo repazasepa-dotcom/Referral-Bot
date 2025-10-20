@@ -734,10 +734,10 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⏱️ Once confirmed, your balance updates automatically."
     )
 
-    await query.edit_message_text(
-        text=invest_text,
-        parse_mode="Markdown",
-        reply_markup=build_main_menu(),
+         await query.edit_message_text(
+             text=invest_text,
+             parse_mode="Markdown",
+             reply_markup=build_main_menu(),
     )
 
     elif data == "referral":
