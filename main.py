@@ -202,6 +202,7 @@ def build_main_menu():
          InlineKeyboardButton("💎 FAQ", callback_data="menu:faq")],
         [InlineKeyboardButton("🏦 Withdraw", callback_data="menu:withdraw"),
          InlineKeyboardButton("❓ Help", callback_data="menu:help")],
+        [InlineKeyboardButton("🌟 Join Premium", callback_data="join_premium")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -260,7 +261,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{benefits_text}"
         f"💰 To access, pay USDT (BEP20) to this address:\n"
         f"`{BNB_ADDRESS}`\n\n"
-        f"After payment submit TXID: `/pay <TXID>`\n\n"
+        f"After payment submit TXID type: `/pay <TXID>`\n\n"
         f"🔗 Your referral link:\n{referral_link}",
         parse_mode="Markdown",
         reply_markup=menu,
@@ -305,6 +306,39 @@ async def faq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=build_main_menu())
 
 
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    referral_link = f"https://t.me/{context.bot.username}?start={user_id}"
+
+    premium_text = (
+        "💼 𝙋𝙧𝙚𝙢𝙞𝙪𝙢 𝙑𝙄𝙋 𝙈𝙚𝙢𝙗𝙚𝙧𝙨𝙝𝙞𝙥\n\n"
+        "👑 Lifetime Membership Fee:\n"
+        "💰 𝟓𝟎𝟎 𝐔𝐒𝐃𝐓 (𝐃𝐢𝐬𝐜𝐨𝐮𝐧𝐭𝐞𝐝 𝐏𝐫𝐢𝐜𝐞) — 𝐎𝐧𝐥𝐲 𝟐 𝐒𝐥𝐨𝐭𝐬 𝐋𝐞𝐟𝐭!\n"
+        "🪙 Original Price: 1000 USDT (Lifetime)\n\n"
+        "🔥 Benefits:\n"
+        "🚀 Early access to coins before they pump\n"
+        "📊 Buy & Sell targets guidance\n"
+        "📈 2–5 Daily Signals\n"
+        "🤖 Auto Trading by Bot\n"
+        "💎 Premium Channel Only:\n"
+        " 🚀 1–3 Special Signals Daily (coins that pump within 24 h)\n\n"
+        "💳 𝟏-𝐌𝐨𝐧𝐭𝐡 𝐏𝐫𝐞𝐦𝐢𝐮𝐦: 𝟓𝟎 𝐔𝐒𝐃𝐓\n\n"
+        "💰 To access, pay USDT (BEP20) to this address:\n"
+        "`0xC6219FFBA27247937A63963E4779e33F7930d497`\n\n"
+        "After payment submit TXID type: `/pay <TXID>`\n\n"
+        f"🔗 Your referral link:\n{referral_link}"
+    )
+
+    # Use the same inline keyboard layout already shown in the menu
+    await query.message.edit_text(
+        text=premium_text,
+        parse_mode="Markdown",
+        reply_markup=query.message.reply_markup  # reuse same buttons layout
+    )
+    
+    
 async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     link = f"https://t.me/{context.bot.username}?start={user_id}"
@@ -847,6 +881,7 @@ def main():
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("invest", invest))
     app.add_handler(CommandHandler("withdraw", withdraw))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern="^join_premium$"))
 
     # Admin-only commands
     app.add_handler(CommandHandler("distribute", distribute))
